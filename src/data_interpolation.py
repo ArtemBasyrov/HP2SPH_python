@@ -4,6 +4,8 @@ import time
 import jax
 import jax_healpy as jhp
 
+from functools import partial
+
 
 def get_ring_indices(nside):
     """
@@ -73,16 +75,17 @@ def transform_healpix_to_grid(healpix_map):
 
     # Diving data into rings
     start_time0 = time.time()
-    ring_data = [healpix_map[start:end] for start, end, nring in ring_info]
+    ring_data = [healpix_map[start:end+1] for start, end, nring in ring_info]
     fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
     print(f"Ring selection execution time: {time.time() - start_time0:.6f} seconds")
 
+    
 
     # Processing of equatorial rings
     start_time0 = time.time()
     fft_coeff[nside: 3 * nside] = jax.vmap(process_equatorial_ring)(jnp.array(ring_data[nside: 3 * nside]))
     shift = np.exp(-1j * np.pi * np.arange(4 * nside) / (2 * nside))
-    fft_coeff[nside::2] *= shift
+    fft_coeff[nside: 3 * nside:2] *= shift
     print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
 
     # Processing of polar rings
@@ -105,11 +108,10 @@ def transform_healpix_to_grid(healpix_map):
         fft_coeff[n_rings-1 - i] = process_polar_ring(ring_data[n_rings-1 - i])
     print(f"Polar ring execution time: {time.time() - start_time0:.6f} seconds")
 
-    
-
     # Inverse FFT
     start_time0 = time.time()
     upsampled_data = jax.vmap(inverse_fft)(fft_coeff)
+    print(ring_data[nside] - upsampled_data[nside])
     print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
 
     end_time = time.time()
@@ -134,24 +136,61 @@ def transform_grid_to_healpix(grid_data: jnp.array) -> jnp.array:
     n_rings = 4 * nside - 1
 
     ring_info = get_ring_indices(nside) # [start_id, end_id, ring_id]
-    healpix_map = jnp.empty((12 * nside**2))
+    
+    # find the ring sizes
+    i = np.arange(1, n_rings + 1)
+    ring_sizes = np.full(n_rings, 4 * nside)
+    ring_sizes[:nside] = 4 * i[:nside]
+    ring_sizes[3 * nside:] = 4 * (4 * nside - i[3 * nside:])
+
+    healpix_map = np.empty((12 * nside**2))
+    fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
 
     # Define function for vectorized FFT processing
-    def process_equatorial_ring(ring_data):
+    def calc_fft(ring_data):
         fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside)
         return fft_coeffs
     
-    def process_polar_ring(ring_data):
-        num_pts = len(ring_data)
-        coeffs = jnp.fft.fft(ring_data, n=num_pts)
+    def process_polar_ring(ring_data, num_pts):
+        fft_coeffs = jnp.fft.ifft(ring_data, n=num_pts, norm='forward').real
+        return fft_coeffs / num_pts
+    
+    def process_equatorial_ring(fft_coeffs):
+        return jnp.fft.ifft(fft_coeffs, n=4 * nside).real
+    
+    # Diving data into rings is unnecessary here, since it's just the first axis of the grid_data
+
+    # Processing all ring with process_equatorial_ring
+    fft_coeff[:] = jax.vmap(calc_fft)(grid_data)
+
+    # Applying equatorial shift
+    shift = jnp.exp(+1j * jnp.pi * jnp.arange(4 * nside) / (2 * nside))
+    fft_coeff[nside: 3 * nside:2] *= shift
+
+    eq_rings = jax.vmap(process_equatorial_ring)(fft_coeff[nside: 3 * nside]) 
+    print(grid_data[nside])
+    print(eq_rings[0])
+    start_id, _, _ = ring_info[nside]
+    _, end_id, _ = ring_info[3 * nside-1]
+    healpix_map[start_id:end_id+1] = jnp.concatenate(eq_rings)
+
+
+    # Applying the polar shift
+    for i in range(nside):
+        num_pts = ring_sizes[i]
         k_vals = np.fft.fftfreq(num_pts) * num_pts
         phase_shift = jnp.exp(+1j * jnp.pi * k_vals / (2 * nside))
-        corrected_coeffs = coeffs * phase_shift
-        coeffs_padded = jnp.pad(corrected_coeffs, (0, 4 * nside - num_pts), mode='constant')
-        return coeffs_padded
-    
-    def inverse_fft(fft_coeffs):
-        return jnp.fft.ifft(fft_coeffs, n=4 * nside).real
+
+        fft_coeff[i, :num_pts] *= phase_shift
+        fft_coeff[-1 - i, :num_pts] *= phase_shift
+
+        start_id, end_id, _ = ring_info[i]
+        healpix_map[start_id:end_id+1] = process_polar_ring(fft_coeff[i], num_pts) 
+
+        start_id, end_id, _ = ring_info[-1 - i]
+        healpix_map[start_id:end_id+1] = process_polar_ring(fft_coeff[-1 - i], num_pts)
+
+    return healpix_map
     
 
 
