@@ -7,7 +7,7 @@ import jax_healpy as jhp
 from functools import partial
 
 
-def get_ring_indices(nside):
+def get_ring_indices(nside: int) -> jnp.array:
     """
     Compute the indices of the pixels in each equatorial ring.
     
@@ -32,7 +32,7 @@ def get_ring_indices(nside):
 
 
 
-def transform_healpix_to_grid(healpix_map):
+def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     start_time = time.time()
     """
     Step 1: Transform a HEALPix map into a tensor product latitude-longitude grid,
@@ -63,7 +63,16 @@ def transform_healpix_to_grid(healpix_map):
         k_vals = np.fft.fftfreq(num_pts) * num_pts
         phase_shift = jnp.exp(-1j * jnp.pi * k_vals / (2 * nside))
         corrected_coeffs = coeffs * phase_shift
-        coeffs_padded = jnp.pad(corrected_coeffs, (0, 4 * nside - num_pts), mode='constant')
+
+        # this padding doesn't correctly account for fft frequencies position in the array
+        #coeffs_padded = jnp.pad(corrected_coeffs, (0, 4 * nside - num_pts), mode='constant') 
+
+        # this padding correctly accounts for fft frequencies position in the array
+        mid = num_pts // 2
+        coeffs_padded = np.zeros(4 * nside, dtype=complex)
+        coeffs_padded[:mid] = corrected_coeffs[:mid]  # Positive frequencies
+        coeffs_padded[-mid:] = corrected_coeffs[-mid:]  # Negative frequencies
+
         return coeffs_padded
     
     def inverse_fft(fft_coeffs):
@@ -111,7 +120,6 @@ def transform_healpix_to_grid(healpix_map):
     # Inverse FFT
     start_time0 = time.time()
     upsampled_data = jax.vmap(inverse_fft)(fft_coeff)
-    print(ring_data[nside] - upsampled_data[nside])
     print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
 
     end_time = time.time()
@@ -119,7 +127,8 @@ def transform_healpix_to_grid(healpix_map):
     return upsampled_data, fft_coeff
 
 
-def transform_grid_to_healpix(grid_data: jnp.array) -> jnp.array:
+# The inverse transformation
+def transform_grid_to_healpix(grid_data: jnp.array, fft_coeff: jnp.array = None) -> jnp.array:
     """
     Transform a tensor product latitude-longitude grid into a HEALPix map,
     correctly handling shifted rings.
@@ -144,45 +153,46 @@ def transform_grid_to_healpix(grid_data: jnp.array) -> jnp.array:
     ring_sizes[3 * nside:] = 4 * (4 * nside - i[3 * nside:])
 
     healpix_map = np.empty((12 * nside**2))
-    fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
+    
 
     # Define function for vectorized FFT processing
     def calc_fft(ring_data):
         fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside)
         return fft_coeffs
     
-    def process_polar_ring(ring_data, num_pts):
-        fft_coeffs = jnp.fft.ifft(ring_data, n=num_pts, norm='forward').real
+    def process_polar_ring(fft_coeff, num_pts):
+        mid = num_pts // 2
+        corrected_coeffs_back = np.zeros(num_pts, dtype=complex)
+        corrected_coeffs_back[:mid] = fft_coeff[:mid]
+        corrected_coeffs_back[-mid:] = fft_coeff[-mid:]
+
+        fft_coeffs = jnp.fft.ifft(corrected_coeffs_back, n=num_pts, norm='forward').real
         return fft_coeffs / num_pts
     
     def process_equatorial_ring(fft_coeffs):
         return jnp.fft.ifft(fft_coeffs, n=4 * nside).real
     
-    # Diving data into rings is unnecessary here, since it's just the first axis of the grid_data
+    if fft_coeff is None:
+        fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
 
-    # Processing all ring with process_equatorial_ring
-    fft_coeff[:] = jax.vmap(calc_fft)(grid_data)
+        # Processing all ring with process_equatorial_ring
+        fft_coeff[:] = jax.vmap(calc_fft)(grid_data)
 
     # Applying equatorial shift
     shift = jnp.exp(+1j * jnp.pi * jnp.arange(4 * nside) / (2 * nside))
-    fft_coeff[nside: 3 * nside:2] *= shift
+    fft_coeff[nside: 3 * nside: 2] *= shift
 
     eq_rings = jax.vmap(process_equatorial_ring)(fft_coeff[nside: 3 * nside]) 
-    print(grid_data[nside])
-    print(eq_rings[0])
     start_id, _, _ = ring_info[nside]
     _, end_id, _ = ring_info[3 * nside-1]
     healpix_map[start_id:end_id+1] = jnp.concatenate(eq_rings)
 
 
     # Applying the polar shift
+    fft_coeff[:nside] *= shift # we can apply the shift to all rings at once
+    fft_coeff[3*nside:] *= shift
     for i in range(nside):
         num_pts = ring_sizes[i]
-        k_vals = np.fft.fftfreq(num_pts) * num_pts
-        phase_shift = jnp.exp(+1j * jnp.pi * k_vals / (2 * nside))
-
-        fft_coeff[i, :num_pts] *= phase_shift
-        fft_coeff[-1 - i, :num_pts] *= phase_shift
 
         start_id, end_id, _ = ring_info[i]
         healpix_map[start_id:end_id+1] = process_polar_ring(fft_coeff[i], num_pts) 
@@ -196,7 +206,7 @@ def transform_grid_to_healpix(grid_data: jnp.array) -> jnp.array:
 
 
 # For visualisation 
-def create_upsampled_grid(nside):
+def create_upsampled_grid(nside: int) -> (jnp.array, jnp.array):
     """
     Creates the longitude-latitude grid corresponding to the upsampled HEALPix points,
     covering the northern polar, equatorial, and southern polar regions.
@@ -216,7 +226,7 @@ def create_upsampled_grid(nside):
     return np.meshgrid(longitudes, latitudes)
 
 
-def create_latitude_array(nside):
+def create_latitude_array(nside: int) -> jnp.array:
     # HEALPix j-values for polar and equatorial regions
     j_north_south = np.arange(1, nside)  # j-values for polar region rings
     j_equatorial = np.arange(nside, 3 * nside + 1)  # j-values for equatorial region rings
