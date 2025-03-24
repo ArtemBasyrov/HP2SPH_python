@@ -51,8 +51,8 @@ def transform_healpix_to_grid(healpix_map):
     # Define function for vectorized FFT processing
     def process_equatorial_ring(ring_data):
         fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside)
-        shift = np.exp(-1j * np.pi * np.arange(4 * nside) / (2 * nside))
-        fft_coeffs = jax.lax.select((nside <= i) & (i < (3 * nside)), fft_coeffs * shift, fft_coeffs)
+        #shift = np.exp(-1j * np.pi * np.arange(4 * nside) / (2 * nside))
+        #fft_coeffs = jax.lax.select((nside <= i) & (i < (3 * nside)), fft_coeffs * shift, fft_coeffs)
         return fft_coeffs
     
     def process_polar_ring(ring_data):
@@ -69,8 +69,23 @@ def transform_healpix_to_grid(healpix_map):
     
 
     
-    # Processing of polar rings
+    
 
+    # Diving data into rings
+    start_time0 = time.time()
+    ring_data = [healpix_map[start:end] for start, end, nring in ring_info]
+    fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
+    print(f"Ring selection execution time: {time.time() - start_time0:.6f} seconds")
+
+
+    # Processing of equatorial rings
+    start_time0 = time.time()
+    fft_coeff[nside: 3 * nside] = jax.vmap(process_equatorial_ring)(jnp.array(ring_data[nside: 3 * nside]))
+    shift = np.exp(-1j * np.pi * np.arange(4 * nside) / (2 * nside))
+    fft_coeff[nside::2] *= shift
+    print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
+
+    # Processing of polar rings
     '''
     As an idea I can switch to Julia FFTW library for the FFT computation in polar rings
 
@@ -85,19 +100,12 @@ def transform_healpix_to_grid(healpix_map):
     FFTW.set_num_threads(num_cores)
     '''
     start_time0 = time.time()
-    ring_data = [healpix_map[start:end] for start, end, nring in ring_info]
-    fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
-    print(f"Ring selection execution time: {time.time() - start_time0:.6f} seconds")
-    start_time0 = time.time()
     for i in range(nside):
         fft_coeff[i] = process_polar_ring(ring_data[i])
         fft_coeff[n_rings-1 - i] = process_polar_ring(ring_data[n_rings-1 - i])
     print(f"Polar ring execution time: {time.time() - start_time0:.6f} seconds")
 
-    # Processing of equatorial rings
-    start_time0 = time.time()
-    fft_coeff[nside: 3 * nside] = jax.vmap(process_equatorial_ring)(jnp.array(ring_data[nside: 3 * nside]))
-    print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
+    
 
     # Inverse FFT
     start_time0 = time.time()
@@ -107,6 +115,45 @@ def transform_healpix_to_grid(healpix_map):
     end_time = time.time()
     print(f"data_interpolation execution time: {end_time - start_time:.6f} seconds")
     return upsampled_data, fft_coeff
+
+
+def transform_grid_to_healpix(grid_data: jnp.array) -> jnp.array:
+    """
+    Transform a tensor product latitude-longitude grid into a HEALPix map,
+    correctly handling shifted rings.
+    
+    Parameters:
+        grid_data (ndarray): HEALPix map data.
+    
+    Returns:
+        healpix_map (ndarray): Data mapped to the structured grid.
+    """
+
+    # get general info
+    nside = grid_data.shape[1] // 4
+    n_rings = 4 * nside - 1
+
+    ring_info = get_ring_indices(nside) # [start_id, end_id, ring_id]
+    healpix_map = jnp.empty((12 * nside**2))
+
+    # Define function for vectorized FFT processing
+    def process_equatorial_ring(ring_data):
+        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside)
+        return fft_coeffs
+    
+    def process_polar_ring(ring_data):
+        num_pts = len(ring_data)
+        coeffs = jnp.fft.fft(ring_data, n=num_pts)
+        k_vals = np.fft.fftfreq(num_pts) * num_pts
+        phase_shift = jnp.exp(+1j * jnp.pi * k_vals / (2 * nside))
+        corrected_coeffs = coeffs * phase_shift
+        coeffs_padded = jnp.pad(corrected_coeffs, (0, 4 * nside - num_pts), mode='constant')
+        return coeffs_padded
+    
+    def inverse_fft(fft_coeffs):
+        return jnp.fft.ifft(fft_coeffs, n=4 * nside).real
+    
+
 
 
 # For visualisation 
