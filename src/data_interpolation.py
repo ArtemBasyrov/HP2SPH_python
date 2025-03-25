@@ -119,6 +119,8 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
 
 
 
+
+
 # The inverse transformation
 def transform_grid_to_healpix(grid_data: jnp.array, fft_coeff: jnp.array = None) -> jnp.array:
     """

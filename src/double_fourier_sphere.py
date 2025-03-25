@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax
 from functools import partial
 
-from src.data_interpolation import create_latitude_array
+from HP2SPH_python.src.data_interpolation import create_latitude_array
 
 
 def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
@@ -18,12 +18,20 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
 
     # double the fft coefficients
     n_rings = fft_coeff.shape[0]
-    double_fft = np.zeros((2*n_rings+2, fft_coeff.shape[1]))
+    double_fft = np.zeros((2*n_rings+2, fft_coeff.shape[1]), dtype=complex)
     double_fft[0] = np.fft.fft(double_map[0], n=fft_coeff.shape[1])
     double_fft[1:n_rings+1] = fft_coeff[:]
     double_fft[n_rings+1] = np.fft.fft(double_map[n_rings], n=fft_coeff.shape[1])
     double_fft[n_rings+2:] = south_part
     return double_map, double_fft
+
+
+def DFS_inverse(double_map: jnp.array, double_fft: jnp.array) -> (jnp.array, jnp.array):
+    nside = double_map.shape[1] // 4
+    n_rings = 4*nside - 1
+    mp = double_map[1:n_rings+1]
+    fft_coeff = double_fft[1:n_rings+1]
+    return mp, fft_coeff
 
 
 def interpolate_polar_rings(mp: jnp.array) -> jnp.array:
