@@ -25,9 +25,7 @@ def apply_nuFFT(mp: jnp.array) -> jnp.array:
     plan.setpts(DFT_upsampled_lat)
     fft_lat = plan.execute(mp.T) # batch accelerated calcualtion
 
-    fft_lat = jnp.fft.ifftshift(fft_lat.T) # shift to numpy order
-
-    return fft_lat
+    return fft_lat.T
 
 
 def inverse_nuFFT(fft_lat: jnp.array) -> jnp.array:
@@ -58,8 +56,6 @@ def inverse_nuFFT(fft_lat: jnp.array) -> jnp.array:
     # transform to [-pi, pi) range
     DFT_upsampled_lat = DFT_upsampled_lat * np.pi / 180 + np.pi/2
 
-    # Apply inverse FFT shift to match FINUFFT's input order
-    fft_lat = jnp.fft.fftshift(fft_lat)
     fft_lat = np.array(fft_lat)
 
     # setting up the nufft calculations

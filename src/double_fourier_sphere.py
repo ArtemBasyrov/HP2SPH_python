@@ -23,14 +23,24 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
     double_fft[1:n_rings+1] = fft_coeff[:]
     double_fft[n_rings+1] = np.fft.fft(double_map[n_rings], n=fft_coeff.shape[1])
     double_fft[n_rings+2:] = south_part
+
+    # apply FFT shift from numpy ordering to natural ordering
+    double_fft = np.fft.fftshift(double_fft, axes=1)
+
     return double_map, double_fft
 
 
 def DFS_inverse(double_map: jnp.array, double_fft: jnp.array) -> (jnp.array, jnp.array):
     nside = double_map.shape[1] // 4
     n_rings = 4*nside - 1
+
+    # selecting the upper part of the double map without added poles
     mp = double_map[1:n_rings+1]
     fft_coeff = double_fft[1:n_rings+1]
+
+    # apply FFT shift from natural ordering to numpy ordering
+    fft_coeff = np.fft.ifftshift(fft_coeff, axes=1)
+
     return mp, fft_coeff
 
 

@@ -7,23 +7,42 @@ def preparation(bivar_coeffs: jnp.array) -> jnp.array:
     NSIDE = bivar_coeffs.shape[1]//4
 
     # expanding the coefficients in longitude to 4*NSIDE+1 
-    X = np.zeros((4*NSIDE+1, 4*NSIDE+1), dtype=complex)
-    X[:, 1:] = bivar_coeffs
-    X[:,0] = 0.5*bivar_coeffs[:,-1]
-    X[:,-1] = 0.5*bivar_coeffs[:,0]
+    X_coeff = np.zeros((4*NSIDE+1, 4*NSIDE+1), dtype=complex)
+    neg_column = bivar_coeffs[:,0] # at k = -2*NSIDE, it's 0 index because of natural ordering of FFT
+    X_coeff[:, 1:] = bivar_coeffs
+    X_coeff[:,0] = 0.5*neg_column
+    X_coeff[:,-1] = 0.5*neg_column
 
     # transform X into g array
-    g = np.zeros((2*NSIDE+1, 4*NSIDE+1), dtype=complex)
-    X_pos = X[2*NSIDE:]
-    X_neg = np.conj(np.flip(X[:2*NSIDE+1]))
-    g[:,0::2] = X_pos[:,0::2] + X_neg[:,0::2] # k even
-    g[:,1::2] = X_pos[:,1::2] - X_neg[:,1::2] # k odd
+    g = np.zeros((2*NSIDE+1, 4*NSIDE+1), dtype=complex) # size (p, 2p+1)
 
-    # sort the g array
-    k = np.arange(-2*NSIDE, 2*NSIDE+1, dtype=float)
-    k[k < 0] = k[k < 0] + 0.1
-    idx = np.argsort(np.abs(k))
-    g = g[:,idx]
+    # rearange X into [0 ,-1, 1, -2, 2, ...] order along k
+    indx = np.fft.fftfreq(4*NSIDE+1, d=1) * (4*NSIDE+1)
+    indx = np.fft.fftshift(indx)
+    sel = np.argsort(np.abs(indx), kind='stable')
+    indx = indx[sel]
+    X_sort = X_coeff[:,sel]
+
+    X_pos_ell = X_sort[2*NSIDE:] # including 0 and positive ell
+    X_neg_ell = X_sort[:2*NSIDE]
+
+    # create sel for odd and even k
+    sel_even = (indx[1:]%2 == 0)
+    sel_odd = ~sel_even
+
+    # first row is zero j = 0
+    g[0,1:] = (X_pos_ell[0,1:] + X_pos_ell[0,1:])* np.sqrt(1./np.pi)
+    g[0,1:][sel_odd] = 0
+
+    # first column is zero k = m = 0
+    g[:,0] = X_pos_ell[:,0]*2 * np.sqrt(0.5/np.pi)
+
+    # everyhting inside the matrix except the zero row and column
+    g_k_even = (X_pos_ell[1:,1:] + X_neg_ell[:,1:])* np.sqrt(1./np.pi) # k even
+    g_k_odd = 1j*(X_pos_ell[1:,1:] - X_neg_ell[:,1:])* np.sqrt(1./np.pi) # k odd
+
+    g[1:,1:][:,sel_even] = g_k_even[:,sel_even]
+    g[1:,1:][:,sel_odd] = g_k_odd[:,sel_odd]
 
     return g
 
