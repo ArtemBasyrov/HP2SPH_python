@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import finufft
 
-from HP2SPH_python.src.data_interpolation import create_latitude_array
+from .data_interpolation import create_latitude_array
 
 def apply_nuFFT(mp: jnp.array) -> jnp.array: 
     nside = mp.shape[1] // 4

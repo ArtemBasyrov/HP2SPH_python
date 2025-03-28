@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax
 from functools import partial
 
-from HP2SPH_python.src.data_interpolation import create_latitude_array
+from .data_interpolation import create_latitude_array
 
 
 def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
