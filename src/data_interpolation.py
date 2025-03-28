@@ -53,12 +53,12 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     
     # Define function for vectorized FFT processing
     def process_equatorial_ring(ring_data):
-        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside)
+        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside, norm='ortho')
         return fft_coeffs
     
     def process_polar_ring(ring_data):
         num_pts = len(ring_data)
-        coeffs = jnp.fft.fft(ring_data, n=num_pts)
+        coeffs = jnp.fft.fft(ring_data, n=num_pts, norm='ortho') 
         k_vals = np.fft.fftfreq(num_pts) * num_pts
         phase_shift = jnp.exp(-1j * jnp.pi * k_vals / (2 * nside))
         corrected_coeffs = coeffs * phase_shift
@@ -72,7 +72,7 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
         return coeffs_padded
     
     def inverse_fft(fft_coeffs):
-        return jnp.fft.ifft(fft_coeffs, n=4 * nside).real
+        return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm='ortho').real
     
 
     # Diving data into rings

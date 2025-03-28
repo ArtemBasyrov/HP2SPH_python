@@ -20,12 +20,13 @@ def apply_nuFFT(mp: jnp.array) -> jnp.array:
     DFT_upsampled_lat = DFT_upsampled_lat * np.pi / 180 + np.pi/2
 
     # setting up the nufft calculations
-    mp = mp.astype(complex)
+    M = 4 * nside + 1  # Number of Fourier modes
+    N = len(latitudes)*2+2 # Number of non-uniform latitude samples
     plan = finufft.Plan(1, (4*nside+1,), n_trans=4*nside) # allows to reuse the same plan for all latitudes
     plan.setpts(DFT_upsampled_lat)
     fft_lat = plan.execute(mp.T) # batch accelerated calcualtion
 
-    return fft_lat.T
+    return fft_lat.T / np.sqrt(N) # normalise the output
 
 
 def inverse_nuFFT(fft_lat: jnp.array) -> jnp.array:
@@ -65,7 +66,7 @@ def inverse_nuFFT(fft_lat: jnp.array) -> jnp.array:
     plan.setpts(DFT_upsampled_lat)
     mp_reconstructed = plan.execute(fft_lat.T) # batch accelerated calcualtion
 
-    mp_reconstructed = mp_reconstructed.T / N # normalise the output
+    mp_reconstructed = mp_reconstructed.T / np.sqrt(N) # normalise the output
 
     return mp_reconstructed.real 
 

@@ -62,8 +62,6 @@ def call_Julia(g: jnp.array) -> jnp.array:
     
 
 def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
-    NSIDE = bivar_coeffs.shape[1]//4
-
     g = preparation(bivar_coeffs)
 
     output_array = call_Julia(g)
