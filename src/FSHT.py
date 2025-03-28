@@ -56,8 +56,13 @@ def call_Julia(g: jnp.array) -> jnp.array:
         text=True,
         capture_output=True
     )
+
+    def complex_decoder(obj):
+        if "__complex__" in obj:
+            return complex(obj["real"], obj["imag"])
+        return obj
     
-    output_array = json.loads(result.stdout)
+    output_array = json.loads(result.stdout, object_hook=complex_decoder)
     return output_array
     
 
@@ -65,10 +70,7 @@ def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
     g = preparation(bivar_coeffs)
 
     output_array = call_Julia(g)
-
-    # very suspicious move! [probably slow]
-    # Extract real and imaginary parts into separate arrays
-    C = np.array([el['re'] + 1j*el['im'] for el in output_array])
+    C = np.array(output_array).T
 
     return C
 

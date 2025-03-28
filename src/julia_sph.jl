@@ -5,7 +5,6 @@ function healpy_index(l, m)
     return Int(l*(l+1)/2 + m + 1)
 end
 
-
 function transform2HealpixConvention(C)
     # Convert the input array to the Healpix convention
     lmax = size(C, 1)-1
@@ -20,6 +19,10 @@ function transform2HealpixConvention(C)
     end
 
     return alm_arr
+end
+
+function encode_complex(C)
+    return map(x -> Dict("__complex__" => true, "real" => real(x), "imag" => imag(x)), C)
 end
 
 # Read JSON input from stdin
@@ -41,7 +44,8 @@ complex_array = transpose(complex_array)
 
 # Perform the Fourier transform
 C = fourier2sph(complex_array)
-alm = transform2HealpixConvention(C)
+#alm = transform2HealpixConvention(C)
 
 # Convert to JSON and print
-println(JSON.json(alm))
+#println(JSON.json(alm))
+println(JSON.json(encode_complex(C)))
