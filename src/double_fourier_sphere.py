@@ -30,18 +30,17 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
     return double_map, double_fft
 
 
-def DFS_inverse(double_map: jnp.array, double_fft: jnp.array) -> (jnp.array, jnp.array):
-    nside = double_map.shape[1] // 4
+def DFS_inverse(double_fft: jnp.array) -> jnp.array:
+    nside = double_fft.shape[1] // 4
     n_rings = 4*nside - 1
 
     # selecting the upper part of the double map without added poles
-    mp = double_map[1:n_rings+1]
     fft_coeff = double_fft[1:n_rings+1]
 
     # apply FFT shift from natural ordering to numpy ordering
     fft_coeff = np.fft.ifftshift(fft_coeff, axes=1)
 
-    return mp, fft_coeff
+    return fft_coeff
 
 
 def interpolate_polar_rings(mp: jnp.array) -> jnp.array:

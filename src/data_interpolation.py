@@ -135,7 +135,7 @@ def transform_grid_to_healpix(grid_data: jnp.array, fft_coeff: jnp.array = None)
     """
 
     # get general info
-    nside = grid_data.shape[1] // 4
+    nside = fft_coeff.shape[1] // 4
     n_rings = 4 * nside - 1
     ring_info = get_ring_indices(nside) # [start_id, end_id, ring_id]
     
