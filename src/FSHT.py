@@ -72,7 +72,7 @@ def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
     g = preparation(bivar_coeffs)
 
     output_array = call_Julia(g, scriptname='src/julia_sph.jl')
-    C = np.array(output_array).T
+    C = np.array(output_array)
 
     return C
 
@@ -101,9 +101,6 @@ def convert_to_bivar_coeffs(g: jnp.array) -> jnp.array:
     g_m_pos = g[:,2::2] # [ 1,  2,  3, ...,  2*NSIDE]
     sel_even = (np.arange(1, 2*NSIDE+1)%2 == 0)
     sel_odd = ~sel_even
-
-    print(indx[2*NSIDE+1:][sel_odd])
-    print(g_m_pos[:2*NSIDE,sel_odd].shape)
 
     # m > 0
     X_pos_ell = g_m_pos * np.sqrt(np.pi) / 2
@@ -135,13 +132,13 @@ def convert_to_bivar_coeffs(g: jnp.array) -> jnp.array:
     
     return bivar_coeff
 
-def inverse_FSHT(C: jnp.array) -> jnp.array:
-    output_array = call_Julia(C, scriptname='src/julia_sph_inverse.jl')
-    bivar_coeffs = np.array(output_array).T
+def inverse_FSHT(alm: jnp.array) -> jnp.array:
+    output_array = call_Julia(alm, scriptname='src/julia_sph_inverse.jl')
+    bivar_coeffs = np.array(output_array)
 
-    # convert_to_bivar_coeffs(bivar_coeffs)
+    C = convert_to_bivar_coeffs(bivar_coeffs)
 
-    return bivar_coeffs
+    return bivar_coeffs, C
 
 
 

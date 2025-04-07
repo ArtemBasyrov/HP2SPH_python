@@ -15,15 +15,11 @@ data = JSON.parse(json_input)
 real_part = data["real"]
 imag_part = data["imag"]
 
-real_part = hcat(real_part...)
-imag_part = hcat(imag_part...)
-
-# Convert to a complex array
 complex_array = real_part .+ imag_part*im
-complex_array = transpose(complex_array)
+complex_array = reduce(vcat, complex_array')
 
 # Perform the Fourier transform
 F = sph2fourier(complex_array)
 
 # Convert to JSON and print
-println(JSON.json(encode_complex(F)))
+println(JSON.json(encode_complex(permutedims(F))))
