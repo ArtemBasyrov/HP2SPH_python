@@ -24,7 +24,8 @@ def apply_nuFFT(mp: jnp.array) -> jnp.array:
     N = len(latitudes)*2+2 # Number of non-uniform latitude samples
     plan = finufft.Plan(1, (4*nside+1,), n_trans=4*nside) # allows to reuse the same plan for all latitudes
     plan.setpts(DFT_upsampled_lat)
-    fft_lat = plan.execute(mp.T) # batch accelerated calcualtion
+    mp_T = mp.T.copy()
+    fft_lat = plan.execute(mp_T) # batch accelerated calcualtion
 
     return fft_lat.T / np.sqrt(N) # normalise the output
 
