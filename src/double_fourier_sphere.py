@@ -18,9 +18,9 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
     # double the fft coefficients
     n_rings = fft_coeff.shape[0]
     double_fft = np.zeros((2*n_rings+2, fft_coeff.shape[1]), dtype=complex)
-    double_fft[0] = np.fft.fft(double_map[0], n=fft_coeff.shape[1], norm='ortho')
+    double_fft[0] = np.fft.fft(double_map[0], n=fft_coeff.shape[1], norm='forward')
     double_fft[1:n_rings+1] = fft_coeff[:]
-    double_fft[n_rings+1] = np.fft.fft(double_map[n_rings], n=fft_coeff.shape[1], norm='ortho')
+    double_fft[n_rings+1] = np.fft.fft(double_map[n_rings], n=fft_coeff.shape[1], norm='forward')
     double_fft[n_rings+2:] = south_part
 
     # apply FFT shift from numpy ordering to natural ordering
