@@ -7,11 +7,36 @@ from scipy.sparse.linalg import cg, LinearOperator
 from .data_interpolation import create_latitude_array
 
 
+def compute_voronoi_weights_1d(x, domain=(np.pi, -np.pi)):
+    """
+    Compute Voronoi cell-based weights for 1D nonuniform points.
+    
+    Args:
+        x (np.ndarray): 1D nonuniform sample locations.
+        domain (tuple): Domain boundaries (left, right).
+    
+    Returns:
+        weights (np.ndarray): Density compensation weights.
+    """
+    
+    # Compute midpoints between points
+    midpoints = (x[1:] + x[:-1]) / 2.0
+
+    # Add domain boundaries
+    left, right = domain
+    midpoints = np.concatenate([[left], midpoints, [right]])
+
+    # Calculate Voronoi cell lengths
+    weights_sorted = midpoints[1:] - midpoints[:-1]
+
+    return -weights_sorted
+
+
 def cg_nufft_forward(x, f_samples):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside
     M_samples = f_samples.shape[1]
-    N_modes = n_trans+1  # Assuming square system (adjust if needed)
+    N_modes =n_trans+1  # Number of Fourier modes (4*nside+1)
 
     # Precompute NUFFT plans with batch processing (n_trans transforms)
     plan_forward = finufft.Plan(2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128)
@@ -20,6 +45,10 @@ def cg_nufft_forward(x, f_samples):
     # Set nonuniform points (same for all transforms)
     plan_forward.setpts(x)
     plan_adjoint.setpts(x)
+
+    # Calculate Voronoi weights
+    weights = compute_voronoi_weights_1d(x)
+    norm = np.sum(weights) # M_samples if weights = 1
 
     # Reshape helpers
     def vec_to_mat_hat(vec):
@@ -37,20 +66,22 @@ def cg_nufft_forward(x, f_samples):
         f_hat_mat = vec_to_mat_hat(f_hat_vec)
         out = np.zeros((n_trans, M_samples), dtype=np.complex128)
         plan_forward.execute(f_hat_mat, out)
-        return mat_to_vec(out/ np.sqrt(np.max([N_modes, M_samples])) )
+        return mat_to_vec(out) 
 
     def adjoint_op(f_samples_vec):
         """A^H @ f_samples for all transforms (batched)"""
         f_samples_mat = vec_to_mat_samples(f_samples_vec)
+        weighted_samples = f_samples_mat * weights
         out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(f_samples_mat, out)
-        return mat_to_vec(out / np.sqrt(np.max([N_modes, M_samples])) )
+        plan_adjoint.execute(weighted_samples, out)
+        return mat_to_vec(out / norm)
     
     def calc_rhs(f_sample_init):
         """A^H @ f_samples for all transforms (batched) initial"""
+        weighted_samples_init = f_sample_init * weights
         out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(f_sample_init, out)
-        return mat_to_vec(out / np.sqrt(np.max([N_modes, M_samples])) )
+        plan_adjoint.execute(weighted_samples_init, out)
+        return mat_to_vec(out / norm)
 
     # Solve (A^H A) f_hat = A^H f_samples using CG (batched)
     def apply_AHA(f_hat_vec):
@@ -87,16 +118,23 @@ def cg_nufft_backward(x, f_hat):
     """
     # Get dimensions
     n_trans = f_hat.shape[0]  # = 4*nside (assuming f_hat shape [n_trans, N_modes])
-    N_modes = f_hat.shape[1]
+    N_modes = f_hat.shape[1] # Number of Fourier modes 
     M_samples = len(x)
     nside = n_trans // 4
 
     # Precompute NUFFT plans (same as forward code)
     plan_forward = finufft.Plan(2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128)
     plan_adjoint = finufft.Plan(1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128)
+
+    # Set nonuniform points (same for all transforms)
     plan_forward.setpts(x)
     plan_adjoint.setpts(x)
 
+    # Calculate Voronoi weights
+    weights = compute_voronoi_weights_1d(x)
+    norm = np.sum(weights) # M_samples if weights = 1
+
+    
     # Reshape helpers (adjusted for backward problem)
     def vec_to_mat_samples(vec):
         return vec.reshape(n_trans, M_samples)
@@ -111,16 +149,17 @@ def cg_nufft_backward(x, f_hat):
     def adjoint_op(f_samples_vec):
         """A^H @ f_samples (NUFFT Type 1)"""
         f_samples_mat = vec_to_mat_samples(f_samples_vec)
+        weighted_samples = f_samples_mat * weights
         out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(f_samples_mat, out)
-        return mat_to_vec(out / np.sqrt(np.max([N_modes, M_samples])))
+        plan_adjoint.execute(weighted_samples, out)
+        return mat_to_vec(out / norm)
 
     def forward_op(f_hat_vec):
         """A @ f_hat (NUFFT Type 2)"""
         f_hat_mat = vec_to_mat_hat(f_hat_vec)
         out = np.zeros((n_trans, M_samples), dtype=np.complex128)
         plan_forward.execute(f_hat_mat, out)
-        return mat_to_vec(out / np.sqrt(np.max([N_modes, M_samples])))
+        return mat_to_vec(out )
 
     def apply_AAH(f_samples_vec):
         """Compute A (A^H f_samples) = (A A^H) f_samples"""

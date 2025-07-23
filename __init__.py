@@ -22,6 +22,7 @@ __all__ = [
     "DFS",
     "DFS_inverse",
     "FSHT",
+    "inverse_FSHT",
     "apply_nuFFT",
     "inverse_nuFFT"
 ]

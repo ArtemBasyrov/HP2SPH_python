@@ -58,7 +58,7 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     
     def process_polar_ring(ring_data):
         num_pts = len(ring_data)
-        coeffs = jnp.fft.fft(ring_data, n=num_pts, norm='backward') # we normalize polar ring later
+        coeffs = jnp.fft.fft(ring_data, n=num_pts, norm='forward') 
         k_vals = np.fft.fftfreq(num_pts) * num_pts
         phase_shift = jnp.exp(-1j * jnp.pi * k_vals / (2 * nside))
         corrected_coeffs = coeffs * phase_shift
@@ -69,24 +69,24 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
         coeffs_padded[:mid] = corrected_coeffs[:mid]  # Positive frequencies
         coeffs_padded[-mid:] = corrected_coeffs[-mid:]  # Negative frequencies
 
-        return coeffs_padded / (4* nside)
+        return coeffs_padded * num_pts / (4 * nside)
     
     def inverse_fft(fft_coeffs):
         return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm='forward').real
     
 
     # Diving data into rings
-    start_time0 = time.time()
+    #start_time0 = time.time()
     ring_data = [healpix_map[start:end+1] for start, end, nring in ring_info]
-    print(f"Ring selection execution time: {time.time() - start_time0:.6f} seconds")
+    #print(f"Ring selection execution time: {time.time() - start_time0:.6f} seconds")
 
     
     # Processing of equatorial rings
-    start_time0 = time.time()
+    #start_time0 = time.time()
     fft_coeff[nside-1: 3 * nside] = jax.vmap(process_equatorial_ring)(jnp.array(ring_data[nside-1: 3 * nside]))
     shift = np.exp(-1j * np.pi * np.arange(4 * nside) / (2 * nside))
     fft_coeff[nside-1: 3 * nside:2] *= shift
-    print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
+    #print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
 
     # Processing of polar rings
     '''
@@ -102,16 +102,16 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     using FFTW
     FFTW.set_num_threads(num_cores)
     '''
-    start_time0 = time.time()
+    #start_time0 = time.time()
     for i in range(nside-1):
         fft_coeff[i] = process_polar_ring(ring_data[i])
         fft_coeff[n_rings-1 - i] = process_polar_ring(ring_data[n_rings-1 - i])
-    print(f"Polar ring execution time: {time.time() - start_time0:.6f} seconds")
+    #print(f"Polar ring execution time: {time.time() - start_time0:.6f} seconds")
 
     # Inverse FFT
-    start_time0 = time.time()
+    #start_time0 = time.time()
     upsampled_data = jax.vmap(inverse_fft)(fft_coeff)
-    print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
+    #print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
 
     end_time = time.time()
     print(f"data_interpolation execution time: {end_time - start_time:.6f} seconds")
@@ -145,12 +145,12 @@ def transform_grid_to_healpix(grid_data: jnp.array, fft_coeff: jnp.array = None)
     ring_sizes[:nside] = 4 * i[:nside]
     ring_sizes[3 * nside:] = 4 * (4 * nside - i[3 * nside:])
 
-    healpix_map = np.empty((12 * nside**2))
+    healpix_map = np.empty(12 * nside**2)
     
 
     # Define function for vectorized FFT processing
     def calc_fft(ring_data):
-        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside)
+        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside, norm='forward')
         return fft_coeffs
     
     def process_polar_ring(fft_coeff, num_pts):
@@ -160,7 +160,7 @@ def transform_grid_to_healpix(grid_data: jnp.array, fft_coeff: jnp.array = None)
         corrected_coeffs_back[-mid:] = fft_coeff[-mid:]
 
         fft_coeffs = jnp.fft.ifft(corrected_coeffs_back, n=num_pts, norm='forward').real
-        return fft_coeffs #/ num_pts
+        return fft_coeffs *(4*nside) / num_pts
     
     def process_equatorial_ring(fft_coeffs):
         return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm='forward').real
@@ -218,6 +218,15 @@ def create_upsampled_grid(nside: int) -> (jnp.array, jnp.array):
 
 
 def create_latitude_array(nside: int) -> jnp.array:
+    """
+    Generate latitude values for HEALPix rings, covering polar and equatorial regions.
+
+    Parameters:
+    - nside: HEALPix resolution parameter.
+
+    Returns:
+    - latitudes: 1D NumPy array of latitude values (in degrees).
+    """
     # HEALPix j-values for polar and equatorial regions
     j_north_south = np.arange(1, nside)  # j-values for polar region rings
     j_equatorial = np.arange(nside, 3 * nside + 1)  # j-values for equatorial region rings
