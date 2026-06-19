@@ -3,16 +3,18 @@ import numpy as np
 import time
 from astropy.io import fits
 
-from src.data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
-from src.double_fourier_sphere import DFS, DFS_inverse
-from src.nuFFT import apply_nuFFT, inverse_nuFFT
-from src.FSHT import FSHT, inverse_FSHT
+"""
+from .src.data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
+from .src.double_fourier_sphere import DFS, DFS_inverse
+from .src.nuFFT import apply_nuFFT, inverse_nuFFT
+from .src.FSHT import FSHT, inverse_FSHT
+"""
 
 
 def save_to_fits(data, filename):
     """
     Save a numpy array to a FITS file.
-    
+
     Parameters:
     - data (numpy.ndarray): The data to save.
     - filename (str): The name of the FITS file to create.
@@ -23,82 +25,149 @@ def save_to_fits(data, filename):
 
     # Save real and imaginary parts to FITS file
     hdu_real = fits.PrimaryHDU(data_real)
-    hdu_imag = fits.ImageHDU(data_imag, name='IMAGINARY')
+    hdu_imag = fits.ImageHDU(data_imag, name="IMAGINARY")
     hdul = fits.HDUList([hdu_real, hdu_imag])
     hdul.writeto(filename, overwrite=True)
-    print(filename+' saved as FITS file')
+    print(filename + " saved as FITS file")
+
 
 def read_fits(filename):
     """
     Read a FITS file and return the data.
-    
+
     Parameters:
     - filename (str): The name of the FITS file to read.
     """
     # Open the FITS file
     with fits.open(filename) as hdul:
         alm_real = hdul[0].data
-        alm_imag = hdul['IMAGINARY'].data
-        
+        alm_imag = hdul["IMAGINARY"].data
+
         # Combine real and imaginary parts into a complex array
         alm = alm_real + 1j * alm_imag
-        
+
     return alm
+
+
+def calc_cl(alm, lmax=None):
+    if lmax is None:
+        lmax = alm.shape[0] - 1
+
+    # create ell array
+    l_array = np.fft.fftfreq(alm.shape[1]) * alm.shape[1]
+    l_array = np.fft.fftshift(l_array)
+    sel = np.argsort(np.abs(l_array), kind="stable")
+    l_array = np.abs(l_array[sel])
+    l_array = np.full(alm.shape, l_array)
+    for i in range(lmax + 1):
+        l_array[i] += i
+
+    # calculate cl
+    cl = np.zeros(lmax + 1)
+    for ell in range(lmax + 1):
+        norm = 1.0 / (2.0 * ell + 1.0)
+        alm_l = alm[(l_array == ell)]
+        cl[ell] = np.sum(np.abs(alm_l) ** 2) * norm
+
+    return cl
 
 
 def forward(mp: np.array) -> np.array:
     """
     Perform the forward transformation from HEALPix map to spherical harmonics.
-    
+
     Parameters:
     - mp (numpy.ndarray): The HEALPix map data.
-    
+
     Returns:
     - alm (numpy.ndarray): The spherical harmonics coefficients.
     """
     # Perform the forward transformation
 
-    assert mp.shape[0] == 3, "Input map must have I, Q, U components" # temporary limit, Q and U do nothing
+    assert mp.shape[0] == 3, (
+        "Input map must have I, Q, U components"
+    )  # temporary limit, Q and U do nothing
     NSIDE = hp.get_nside(mp[0])
-    lmax = 2*NSIDE
+    lmax = 2 * NSIDE
     upsampled_map, fft_coeff = transform_healpix_to_grid(mp[0])
 
     start = time.time()
     _, fft_coeff_DFS = DFS(upsampled_map, fft_coeff)
-    print('DFS time:', time.time() - start)
+    print("DFS time:", time.time() - start)
 
     start = time.time()
     fft_lat_nufft = apply_nuFFT(fft_coeff_DFS)
-    print('nuFFT time:', time.time() - start)
+    print("nuFFT time:", time.time() - start)
 
     start = time.time()
-    alm = FSHT(fft_lat_nufft) 
-    print('FSHT time:', time.time() - start)
+    alm = FSHT(fft_lat_nufft)
+    print("FSHT time:", time.time() - start)
 
-    save_to_fits(alm, 'alm_array_cg_{0}.fits'.format(NSIDE))
+    save_to_fits(alm, "alm_array_cg_{0}.fits".format(NSIDE))
 
     return alm
 
 
-def inverse(alm: np.array) -> np.array:
+def backward(alm: np.array) -> np.array:
     """
     Perform the inverse transformation from spherical harmonics to HEALPix map.
-    
+
     Parameters:
     - alm (numpy.ndarray): The spherical harmonics coefficients.
-    
+
     Returns:
     - mp (numpy.ndarray): The HEALPix map data.
     """
-    
-    NSIDE = (alm.shape[1]-1)//4
-    bivar_coeff, C = inverse_FSHT(alm) 
-    fft_lat = inverse_nuFFT(bivar_coeff)
+
+    # alm/C is the FastTransforms triangular array of shape (L+1, 2*L+1) with
+    # internal band limit L = 4*nside, so nside = (rows - 1) // 4.
+    NSIDE = (alm.shape[0] - 1) // 4
+    _, C = inverse_FSHT(alm, NSIDE)
+    fft_lat = inverse_nuFFT(C)
     fft_coeff = DFS_inverse(fft_lat)
     mp = transform_grid_to_healpix(fft_coeff, fft_coeff)
+
+    hp.write_map("mp_array_cg_{0}.fits".format(NSIDE), mp, overwrite=True)
+    print("mp_array_cg_{0}.fits saved".format(NSIDE))
 
     return mp
 
 
 if __name__ == "__main__":
-    pass
+    from src.data_interpolation import (
+        transform_healpix_to_grid,
+        transform_grid_to_healpix,
+    )
+    from src.double_fourier_sphere import DFS, DFS_inverse
+    from src.nuFFT import apply_nuFFT, inverse_nuFFT
+    from src.FSHT import FSHT, inverse_FSHT
+
+    folder = "/Users/basyrov/Documents/APC/generated_data/"
+    filenames = [
+        "sky_map_freq_100_8.fits",
+        "sky_map_freq_100_16.fits",
+        "sky_map_freq_100_32.fits",
+        "sky_map_freq_100_64.fits",
+    ]
+    """
+        'sky_map_freq_100_128.fits',
+        'sky_map_freq_100_256.fits',
+        'sky_map_freq_100_512.fits',
+        'sky_map_freq_100_1024.fits'
+    ]
+    """
+
+    for filename in filenames:
+        print(filename, "being processed")
+        mp = hp.read_map(folder + filename, field=(0, 1, 2))
+        alm = forward(mp)
+        backward(alm)
+        print()
+else:
+    from .src.data_interpolation import (
+        transform_healpix_to_grid,
+        transform_grid_to_healpix,
+    )
+    from .src.double_fourier_sphere import DFS, DFS_inverse
+    from .src.nuFFT import apply_nuFFT, inverse_nuFFT
+    from .src.FSHT import FSHT, inverse_FSHT

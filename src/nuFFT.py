@@ -10,15 +10,15 @@ from .data_interpolation import create_latitude_array
 def compute_voronoi_weights_1d(x, domain=(np.pi, -np.pi)):
     """
     Compute Voronoi cell-based weights for 1D nonuniform points.
-    
+
     Args:
         x (np.ndarray): 1D nonuniform sample locations.
         domain (tuple): Domain boundaries (left, right).
-    
+
     Returns:
         weights (np.ndarray): Density compensation weights.
     """
-    
+
     # Compute midpoints between points
     midpoints = (x[1:] + x[:-1]) / 2.0
 
@@ -32,15 +32,30 @@ def compute_voronoi_weights_1d(x, domain=(np.pi, -np.pi)):
     return -weights_sorted
 
 
-def cg_nufft_forward(x, f_samples):
+def cg_nufft_forward(x, f_samples, N_modes=None):
     # Get dimensions
-    n_trans = f_samples.shape[0]  # = 4*nside
-    M_samples = f_samples.shape[1]
-    N_modes =n_trans+1  # Number of Fourier modes (4*nside+1)
+    n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
+    M_samples = f_samples.shape[1]  # = 8*nside (number of latitude samples)
+    # Number of latitude Fourier modes to solve for. The latitude bandwidth is
+    # set by the number of latitude SAMPLES (~8*nside after the DFS doubling),
+    # NOT by the longitude count. Using only 4*nside+1 modes (the old
+    # `n_trans + 1`) under-resolves latitude by ~2x and aliases high-frequency
+    # latitude content down into low ell. Default to the smallest ODD count
+    # >= M_samples: odd so the modes are symmetric (-L..L) for the downstream
+    # spherical-harmonic step, and >= M_samples so the (ill-conditioned)
+    # Vandermonde system interpolates the samples exactly (the min-norm CG
+    # solution lives in the sample space; the extra mode sits in the null space).
+    # Dropping even one mode below M_samples reintroduces a ~10% error here.
+    if N_modes is None:
+        N_modes = M_samples + (M_samples % 2 == 0)
 
     # Precompute NUFFT plans with batch processing (n_trans transforms)
-    plan_forward = finufft.Plan(2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128)
-    plan_adjoint = finufft.Plan(1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128)
+    plan_forward = finufft.Plan(
+        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128
+    )
+    plan_adjoint = finufft.Plan(
+        1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128
+    )
 
     # Set nonuniform points (same for all transforms)
     plan_forward.setpts(x)
@@ -48,15 +63,15 @@ def cg_nufft_forward(x, f_samples):
 
     # Calculate Voronoi weights
     weights = compute_voronoi_weights_1d(x)
-    norm = np.sum(weights) # M_samples if weights = 1
+    norm = np.sum(weights)  # M_samples if weights = 1
 
     # Reshape helpers
     def vec_to_mat_hat(vec):
         return vec.reshape(n_trans, N_modes)
-    
+
     def vec_to_mat_samples(vec):
         return vec.reshape(n_trans, M_samples)
-    
+
     def mat_to_vec(mat):
         return mat.ravel()
 
@@ -66,7 +81,7 @@ def cg_nufft_forward(x, f_samples):
         f_hat_mat = vec_to_mat_hat(f_hat_vec)
         out = np.zeros((n_trans, M_samples), dtype=np.complex128)
         plan_forward.execute(f_hat_mat, out)
-        return mat_to_vec(out) 
+        return mat_to_vec(out)
 
     def adjoint_op(f_samples_vec):
         """A^H @ f_samples for all transforms (batched)"""
@@ -75,7 +90,7 @@ def cg_nufft_forward(x, f_samples):
         out = np.zeros((n_trans, N_modes), dtype=np.complex128)
         plan_adjoint.execute(weighted_samples, out)
         return mat_to_vec(out / norm)
-    
+
     def calc_rhs(f_sample_init):
         """A^H @ f_samples for all transforms (batched) initial"""
         weighted_samples_init = f_sample_init * weights
@@ -95,17 +110,11 @@ def cg_nufft_forward(x, f_samples):
     A = LinearOperator(
         shape=(n_trans * N_modes, n_trans * N_modes),
         matvec=apply_AHA,
-        dtype=np.complex128
+        dtype=np.complex128,
     )
 
     # Run CG
-    f_hat_recon_flat, info = cg(
-        A,
-        rhs,
-        x0=f_hat_guess,
-        rtol=1e-6,
-        maxiter=100
-    )
+    f_hat_recon_flat, info = cg(A, rhs, x0=f_hat_guess, rtol=1e-6, maxiter=100)
 
     # Reshape back to (4*nside, N_modes)
     return f_hat_recon_flat.reshape(n_trans, N_modes).T, info
@@ -113,97 +122,47 @@ def cg_nufft_forward(x, f_samples):
 
 def cg_nufft_backward(x, f_hat):
     """
-    Solve for nonuniform samples f_samples from Fourier modes f_hat using CG.
-    Solves: (A A^H) f_samples = A f_hat
+    Synthesis: evaluate the latitude Fourier modes f_hat at the nonuniform
+    sample locations x. This is the adjoint/forward direction of the analysis
+    problem and is a plain type-2 NUFFT, s = A @ f_hat -- no linear solve is
+    needed.
+
+    The previous implementation solved (A A^H) s = A f_hat with CG. That system
+    is SINGULAR whenever there are more samples than modes (A A^H has rank
+    <= N_modes < M_samples), so CG returned a min-norm solution that does not
+    equal A f_hat and injected a large reconstruction error. Direct evaluation
+    is both correct and faster.
     """
     # Get dimensions
-    n_trans = f_hat.shape[0]  # = 4*nside (assuming f_hat shape [n_trans, N_modes])
-    N_modes = f_hat.shape[1] # Number of Fourier modes 
+    n_trans = f_hat.shape[0]  # number of longitude transforms (= 4*nside)
+    N_modes = f_hat.shape[1]  # number of latitude Fourier modes
     M_samples = len(x)
-    nside = n_trans // 4
 
-    # Precompute NUFFT plans (same as forward code)
-    plan_forward = finufft.Plan(2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128)
-    plan_adjoint = finufft.Plan(1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128)
-
-    # Set nonuniform points (same for all transforms)
+    plan_forward = finufft.Plan(
+        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128
+    )
     plan_forward.setpts(x)
-    plan_adjoint.setpts(x)
 
-    # Calculate Voronoi weights
-    weights = compute_voronoi_weights_1d(x)
-    norm = np.sum(weights) # M_samples if weights = 1
+    out = np.zeros((n_trans, M_samples), dtype=np.complex128)
+    plan_forward.execute(np.ascontiguousarray(f_hat), out)
 
-    
-    # Reshape helpers (adjusted for backward problem)
-    def vec_to_mat_samples(vec):
-        return vec.reshape(n_trans, M_samples)
-    
-    def vec_to_mat_hat(vec):
-        return vec.reshape(n_trans, N_modes)
-    
-    def mat_to_vec(mat):
-        return mat.ravel()
-
-    # Define operators for (A A^H)
-    def adjoint_op(f_samples_vec):
-        """A^H @ f_samples (NUFFT Type 1)"""
-        f_samples_mat = vec_to_mat_samples(f_samples_vec)
-        weighted_samples = f_samples_mat * weights
-        out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(weighted_samples, out)
-        return mat_to_vec(out / norm)
-
-    def forward_op(f_hat_vec):
-        """A @ f_hat (NUFFT Type 2)"""
-        f_hat_mat = vec_to_mat_hat(f_hat_vec)
-        out = np.zeros((n_trans, M_samples), dtype=np.complex128)
-        plan_forward.execute(f_hat_mat, out)
-        return mat_to_vec(out )
-
-    def apply_AAH(f_samples_vec):
-        """Compute A (A^H f_samples) = (A A^H) f_samples"""
-        return forward_op(adjoint_op(f_samples_vec))
-
-    # Right-hand side: A @ f_hat (flattened)
-    rhs = forward_op(f_hat.ravel())  # Input f_hat shape [N_modes, n_trans]
-
-    # Linear operator
-    A = LinearOperator(
-        shape=(n_trans * M_samples, n_trans * M_samples),
-        matvec=apply_AAH,
-        dtype=np.complex128
-    )
-
-    # Initial guess
-    f_samples_guess = np.zeros(n_trans * M_samples, dtype=np.complex128)
-
-    # Run CG
-    f_samples_recon_flat, info = cg(
-        A,
-        rhs,
-        x0=f_samples_guess,
-        rtol=1e-6,
-        maxiter=100
-    )
-
-    # Reshape to (n_trans, M_samples)
-    return f_samples_recon_flat.reshape(n_trans, M_samples).T, info
+    # info kept for API compatibility; direct evaluation always "converges".
+    return out.T, 0
 
 
-def apply_nuFFT(mp: jnp.array) -> jnp.array: 
+def apply_nuFFT(mp: jnp.array) -> jnp.array:
     nside = mp.shape[1] // 4
 
     # Calculate the latitude values for the upsampled map
     latitudes = create_latitude_array(nside)
-    DFT_upsampled_lat = np.zeros(len(latitudes)*2+2)
+    DFT_upsampled_lat = np.zeros(len(latitudes) * 2 + 2)
     DFT_upsampled_lat[0] = 90
-    DFT_upsampled_lat[1:len(latitudes)+1] = latitudes
-    DFT_upsampled_lat[len(latitudes)+1] = -90
-    DFT_upsampled_lat[len(latitudes)+2:] = -180 + latitudes
+    DFT_upsampled_lat[1 : len(latitudes) + 1] = latitudes
+    DFT_upsampled_lat[len(latitudes) + 1] = -90
+    DFT_upsampled_lat[len(latitudes) + 2 :] = -180 + latitudes
 
     # transform to [-pi, pi) range
-    DFT_upsampled_lat = DFT_upsampled_lat * np.pi / 180 + np.pi/2
+    DFT_upsampled_lat = DFT_upsampled_lat * np.pi / 180 + np.pi / 2
 
     # applying the CG nufft solver
     fft_lat, info = cg_nufft_forward(DFT_upsampled_lat, mp.T.copy())
@@ -226,19 +185,18 @@ def inverse_nuFFT(fft_lat: jnp.array) -> jnp.array:
     - jnp.array: Reconstructed signal at non-uniform latitude samples.
     """
     nside = fft_lat.shape[1] // 4
-    
+
     # Calculate the latitude values for the upsampled map
     latitudes = create_latitude_array(nside)
-    DFT_upsampled_lat = np.zeros(len(latitudes)*2+2)
+    DFT_upsampled_lat = np.zeros(len(latitudes) * 2 + 2)
     DFT_upsampled_lat[0] = 90
-    DFT_upsampled_lat[1:len(latitudes)+1] = latitudes
-    DFT_upsampled_lat[len(latitudes)+1] = -90
-    DFT_upsampled_lat[len(latitudes)+2:] = -180 + latitudes
+    DFT_upsampled_lat[1 : len(latitudes) + 1] = latitudes
+    DFT_upsampled_lat[len(latitudes) + 1] = -90
+    DFT_upsampled_lat[len(latitudes) + 2 :] = -180 + latitudes
 
     # transform to [-pi, pi) range
-    DFT_upsampled_lat = DFT_upsampled_lat * np.pi / 180 + np.pi/2
+    DFT_upsampled_lat = DFT_upsampled_lat * np.pi / 180 + np.pi / 2
 
-    
     # applying the CG nufft solver
     fft_lat = np.array(fft_lat)
     mp_reconstructed, info = cg_nufft_backward(DFT_upsampled_lat, fft_lat.T.copy())
@@ -248,5 +206,3 @@ def inverse_nuFFT(fft_lat: jnp.array) -> jnp.array:
         print("CG solver didn't converge!")
 
     return mp_reconstructed
-
-

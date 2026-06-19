@@ -2,6 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 from functools import partial
+import healpy as hp
 
 from .data_interpolation import create_latitude_array
 
@@ -11,18 +12,25 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
     double_map = jnp.concatenate((mp, south_part), axis=0)
 
     double_map = interpolate_polar_rings(double_map)
-    
+
     south_part = np.flipud(np.array(fft_coeff))
-    south_part[:,1::2] *= (-1) # flip every odd wave number in the mirrored part by -1
+    south_part[:, 1::2] *= -1  # flip every odd wave number in the mirrored part by -1
 
     # double the fft coefficients
     n_rings = fft_coeff.shape[0]
-    double_fft = np.zeros((2*n_rings+2, fft_coeff.shape[1]), dtype=complex)
-    double_fft[0] = np.fft.fft(double_map[0], n=fft_coeff.shape[1], norm='forward')
-    double_fft[1:n_rings+1] = fft_coeff[:]
-    double_fft[n_rings+1] = np.fft.fft(double_map[n_rings], n=fft_coeff.shape[1], norm='forward')
-    double_fft[n_rings+2:] = south_part
+    double_fft = np.zeros((2 * n_rings + 2, fft_coeff.shape[1]), dtype=complex)
+    double_fft[0] = np.fft.fft(double_map[0], n=fft_coeff.shape[1], norm="forward")
+    double_fft[1 : n_rings + 1] = fft_coeff[:]
+    double_fft[n_rings + 1] = np.fft.fft(
+        double_map[n_rings], n=fft_coeff.shape[1], norm="forward"
+    )
+    double_fft[n_rings + 2 :] = south_part
 
+    """# apply weights correction
+    weights = compute_ring_area_weights(fft_coeff.shape[1] // 4) # both poles + original map
+    double_fft[:n_rings+2] *= weights[:, np.newaxis]
+    double_fft[n_rings+2:] *= np.flip(weights[1:-1])[:, np.newaxis] # flip weights for the mirrored part 
+    """
     # apply FFT shift from numpy ordering to natural ordering
     double_fft = np.fft.fftshift(double_fft, axes=1)
 
@@ -31,10 +39,14 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
 
 def DFS_inverse(double_fft: jnp.array) -> jnp.array:
     nside = double_fft.shape[1] // 4
-    n_rings = 4*nside - 1
+    n_rings = 4 * nside - 1
 
     # selecting the upper part of the double map without added poles
-    fft_coeff = double_fft[1:n_rings+1]
+    fft_coeff = double_fft[1 : n_rings + 1]
+
+    # apply weights correction
+    # weights = compute_ring_area_weights(nside) # both poles + original map
+    # fft_coeff /= weights[1:-1][:, np.newaxis]
 
     # apply FFT shift from natural ordering to numpy ordering
     fft_coeff = np.fft.ifftshift(fft_coeff, axes=1)
@@ -48,36 +60,55 @@ def interpolate_polar_rings(mp: jnp.array) -> jnp.array:
 
     latitudes = create_latitude_array(nside)
 
-
     # Calculate the values at the south pole
     def south_pole(fp: jnp.array, theta: jnp.array) -> jnp.array:
         return jnp.interp(90, -theta, fp)
-    
+
     south_theta = jnp.concatenate((latitudes[-3:], -180 - jnp.flip(latitudes[-3:])))
-    south_fp = jnp.concatenate((mp[n_rings-3:n_rings], mp[n_rings:n_rings+3])).T
+    south_fp = jnp.concatenate((mp[n_rings - 3 : n_rings], mp[n_rings : n_rings + 3])).T
 
     spole = partial(south_pole, theta=south_theta)
     south_pole_mp = jax.vmap(spole)(south_fp)
 
-
     # Calculate the values at the north pole
     def north_pole(fp: jnp.array, theta: jnp.array) -> jnp.array:
         return jnp.interp(90, theta, fp)
-    
+
     north_theta = jnp.concatenate((jnp.flip(latitudes[:3]), 180 - latitudes[:3]))
     north_fp = jnp.concatenate((jnp.flip(mp[:3]), jnp.flip(mp[-3:]))).T
 
     npole = partial(north_pole, theta=north_theta)
     north_pole_mp = jax.vmap(npole)(north_fp)
-    
-    
-    # Add the polar rings to the map
-    double_map = np.zeros((mp.shape[0]+2, mp.shape[1]))
-    double_map[0] = north_pole_mp
-    double_map[1:n_rings+1] = mp[:n_rings]
-    double_map[n_rings+1] = south_pole_mp
-    double_map[n_rings+2:] = mp[n_rings:]
 
+    # Add the polar rings to the map
+    double_map = np.zeros((mp.shape[0] + 2, mp.shape[1]))
+    double_map[0] = north_pole_mp
+    double_map[1 : n_rings + 1] = mp[:n_rings]
+    double_map[n_rings + 1] = south_pole_mp
+    double_map[n_rings + 2 :] = mp[n_rings:]
 
     return double_map
 
+
+def compute_ring_area_weights(nside):
+    theta = create_latitude_array(nside)
+    theta = np.concatenate(([90.0], theta, [-90.0]))  # [90, ..., -90]
+
+    ring_borders = np.zeros(len(theta) + 1)
+    ring_borders[1:-1] = theta[:-1] + np.diff(theta) / 2
+    ring_borders[0] = 90
+    ring_borders[-1] = -90
+    ring_borders = np.deg2rad(ring_borders + 90.0)  # [90, -90] -> [pi, 0]
+
+    ring_areas = np.zeros(len(ring_borders) - 1)
+    ring_areas = -2 * np.pi * (np.cos(ring_borders[:-1]) - np.cos(ring_borders[1:]))
+
+    assert np.isclose(np.sum(ring_areas), 4 * np.pi), (
+        "Sum of ring areas should be equal to 4*pi"
+    )
+
+    hp_pix_area = hp.nside2pixarea(nside)
+    pixel_area = ring_areas / (4 * nside)
+    correction = pixel_area / hp_pix_area
+
+    return correction
