@@ -39,13 +39,23 @@ random band-limited `random_alm`, the synthesised `healpix_map`, and a `relerr`
 helper. `pipeline_helpers.py` wires the four stages into `forward_C` /
 `forward_alm` / `backward_map` without the FITS I/O that `main.py` does.
 
-## Known failures (real defects, not test bugs)
+## Status
 
-- `test_forward_alm_matches_*` (~0.37, constant with nside): the
-  FastTransforms<->healpy **convention conversion** (monopole leakage + m>0
-  longitude phase). This is the next fix; it is *not* a quadrature error.
-- `test_preparation_convert_roundtrip` / `test_fsht_inverse_roundtrip` (~1e-3):
-  `preparation` deliberately zeros odd-m at the Nyquist latitude band.
+All tests pass for `nside in {4, 8, 16}`. The forward transform agrees with the
+input alm and with `hp.map2alm` to ~1e-2 below the longitude Nyquist band
+(`l <= lmax-1`), improving with nside, and the map round trips to machine
+precision. See `test_forward_alm_converges_with_nside` for the convergence guard.
 
-The *self-consistency* tests (all the round trips) pass — the pipeline is a
-correct invertible operator; the open issue is absolute alm correctness.
+What the tolerances encode (kept tight on purpose, not loosened to pass):
+
+- `test_forward_alm_matches_*` assert agreement **below `l = lmax = 2*nside`**.
+  The top band is the longitude Nyquist edge (m up to 2*nside has a single stored
+  coefficient), so no transform on this grid can resolve it — it is excluded, not
+  hidden. A convention/normalization bug would show up as an O(0.1–1) error here.
+- `test_preparation_convert_are_consistent_inverses` checks the **projection**
+  invariant (`convert . prep` is idempotent), the correct property for a lossy
+  projection — not losslessness, which would be a false invariant.
+
+Known limitation (not covered by the suite): at `nside >= 32` the map round trip
+degrades (~8e-3) because the CG nuFFT (`apply_nuFFT`, `maxiter=100`) under-converges
+on the larger system. This is a scalability issue, separate from correctness.

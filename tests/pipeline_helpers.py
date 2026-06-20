@@ -27,7 +27,7 @@ def forward_C(healpix_map):
     return FSHT(fft_lat)
 
 
-def forward_alm(healpix_map, lmax, scale, mono_factor=2.0):
+def forward_alm(healpix_map, lmax, scale, mono_factor=1.0):
     """Full forward transform to a healpy-ordered alm using a given ``scale``."""
     C = forward_C(healpix_map)
     return to_healpy_alm(C, lmax=lmax, scale=scale, mono_factor=mono_factor)

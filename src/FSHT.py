@@ -44,14 +44,19 @@ def preparation(bivar_coeffs: jnp.array) -> jnp.array:
     sel_even = indx[1:] % 2 == 0
     sel_odd = ~sel_even
 
-    # first row is zero j = 0
-    g[0, 1:] = 2 * X_pos_ell[0, 1:] * np.sqrt(1.0 / np.pi)
+    # first row j = 0 (the Chebyshev T_0 / latitude-DC term). For an even
+    # cosine series f = sum_k c_k e^{ikθ} (c_{-k}=c_k) the Chebyshev coeffs are
+    # g_0 = c_0 and g_k = 2 c_k for k>0 -- i.e. the DC row carries NO factor 2.
+    # The previous factor 2 here over-weighted the latitude DC, leaking even-l
+    # zonal power into the monopole and inflating even-m gains. (The odd-m cells
+    # below are a sine series and are handled separately.)
+    g[0, 1:] = X_pos_ell[0, 1:] * np.sqrt(1.0 / np.pi)
     g[0, 1:][sel_odd] = (
         1j * (X_pos_ell[1, 1:] - X_neg_ell[0, 1:])[sel_odd] * np.sqrt(1.0 / np.pi)
     )
 
-    # first column is zero k = m = 0
-    g[0, 0] = X_pos_ell[0, 0] * 2 * np.sqrt(0.5 / np.pi)
+    # first column k = m = 0 ; T_0 row again -> no factor 2 (see above)
+    g[0, 0] = X_pos_ell[0, 0] * np.sqrt(0.5 / np.pi)
     g[1:, 0] = (X_pos_ell[1:, 0] + X_neg_ell[:, 0]) * np.sqrt(0.5 / np.pi)
 
     # everyhting inside the matrix except the zero row and column
@@ -95,7 +100,7 @@ def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
 
 
 def to_healpy_alm(
-    C: np.array, lmax: int, scale: float, mono_factor: float = 2.0
+    C: np.array, lmax: int, scale: float, mono_factor: float = 1.0
 ) -> np.array:
     """
     Convert the FastTransforms spherical-harmonic coefficient array ``C`` into a
@@ -115,14 +120,19 @@ def to_healpy_alm(
     real<->complex spherical-harmonic factor for m != 0.
 
     ``scale`` is the pipeline's overall normalization constant (the gain mapping
-    a unit a_{l,0} onto C[l, 0]); it is a single number for a given nside and is
-    most simply obtained by transforming one zonal harmonic, or by matching
-    total power (Parseval) against the input map. ``mono_factor`` is the extra
-    gain on the monopole (the j=0,m=0 cell carries a factor 2 in ``preparation``;
-    empirically ~2.24 with the current DFS pole handling). NOTE: this conversion
-    fixes the sign/ordering/normalization only; a residual O(10-20%) per-mode
-    error remains from the latitude quadrature at lmax = 2*nside (see the project
-    notes on quadrature weights), so it is not bit-exact against hp.map2alm.
+    a unit a_{l,0} onto C[l, 0]); it is a single number for a given nside,
+    converging to 1/(2*pi), and is most simply obtained by transforming one
+    zonal harmonic. ``mono_factor`` defaults to 1: once ``preparation`` no longer
+    double-weights the latitude-DC (T_0) row, the monopole needs no special gain.
+
+    Only column ``2m-1`` is used: ``preparation``'s real-SH packing makes column
+    ``2m`` the complex conjugate of ``2m-1``, so it carries no extra information.
+
+    With the per-ring longitude referencing fixed in ``data_interpolation`` and
+    the ``preparation`` T_0 fix, the diagonal gains are 1, the monopole leakage
+    and m>0 longitude phase are gone, and the only residual is the genuine
+    latitude QUADRATURE error at lmax = 2*nside, which DECREASES with nside
+    (~5% at nside=8, ~3% at nside=16).
     """
     alm = np.zeros(((lmax + 1) * (lmax + 2)) // 2, dtype=complex)
 
@@ -153,7 +163,10 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
     X_coeff = np.zeros((2 * L + 1, 2 * L + 1), dtype=complex)
 
     # m = 0
-    X_pos_ell = g[:, 0] * np.sqrt(2 * np.pi) / 2
+    X_pos_ell = (g[:, 0] * np.sqrt(2 * np.pi) / 2).copy()
+    # preparation() no longer puts a factor 2 on the T_0 (k=0) row, so restore it
+    # here when inverting (only the k=0 element; k>0 rows already carry it).
+    X_pos_ell[0] *= 2
     X_coeff[L:, L] = X_pos_ell  # including ell = 0
     X_coeff[:L, L] = np.flip(X_pos_ell[1:])
 
@@ -167,6 +180,7 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
     X_pos_ell = g_m_pos * np.sqrt(np.pi) / 2
     X_pos_ell[0, sel_odd] = 0  # odd m, ell = 0
     X_pos_ell[1:, sel_odd] = -1j * g_m_pos[:L, sel_odd] * np.sqrt(np.pi) / 2
+    X_pos_ell[0, sel_even] *= 2  # restore the T_0 (k=0) factor 2 for even m
 
     X_coeff[L:, L + 1 :] = X_pos_ell  # including ell = 0
     X_coeff[:L, L + 1 :][:, sel_even] = np.flip(X_pos_ell[1:], axis=0)[:, sel_even]
@@ -180,6 +194,7 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
     X_pos_ell = g_m_neg * np.sqrt(np.pi) / 2
     X_pos_ell[0, sel_odd] = 0  # odd m, ell = 0
     X_pos_ell[1:, sel_odd] = -1j * g_m_neg[:L, sel_odd] * np.sqrt(np.pi) / 2
+    X_pos_ell[0, sel_even] *= 2  # restore the T_0 (k=0) factor 2 for even m
 
     X_coeff[L:, :L] = X_pos_ell  # including ell = 0
     X_coeff[:L, :L][:, sel_even] = np.flip(X_pos_ell[1:], axis=0)[:, sel_even]

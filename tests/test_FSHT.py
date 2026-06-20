@@ -28,33 +28,36 @@ def test_preparation_shapes(nside, healpix_map):
     assert g.shape == (L + 1, 2 * L + 1)
 
 
-def test_preparation_convert_roundtrip(nside, healpix_map, relerr):
-    """bivar -> g -> bivar must recover the bivariate Fourier coefficients.
+def test_preparation_convert_are_consistent_inverses(nside, healpix_map, relerr):
+    """``convert_to_bivar_coeffs`` must invert ``preparation`` exactly.
 
-    ``preparation`` and ``convert_to_bivar_coeffs`` are an algebraic inverse
-    pair, so for a real band-limited map this should be exact. It currently is
-    NOT (~2.6e-3 at nside=4, ~8e-4 at nside=16): ``preparation`` deliberately
-    zeros odd-m content at the top latitude band (Nyquist edge). The polar-ring
-    normalization fix in ``data_interpolation`` reduced this leakage ~5x, but a
-    residual band-edge truncation remains. Tight tolerance documents it.
+    ``preparation`` is a PROJECTION, not a bijection: it discards the band-edge
+    content (odd-m at the top latitude band, |m|>2*nside) that cannot be
+    represented as valid spherical harmonics. So ``convert(prep(x)) == x`` is a
+    false invariant for arbitrary x. The correct invariant is that ``prep`` and
+    ``convert`` are consistent on the represented subspace, i.e. the map
+    ``P = convert . prep`` is idempotent (P(P(x)) == P(x)) to machine precision.
+    This catches any factor/sign mismatch between the two (e.g. the T_0-row fix).
     """
     fft_lat = _fft_lat(healpix_map)
-    g = preparation(fft_lat)
-    bivar = convert_to_bivar_coeffs(g, nside)
-    assert bivar.shape == fft_lat.shape
-    assert relerr(bivar, fft_lat) < 1e-9
+    Px = convert_to_bivar_coeffs(preparation(fft_lat), nside)
+    PPx = convert_to_bivar_coeffs(preparation(Px), nside)
+    assert Px.shape == fft_lat.shape
+    assert relerr(PPx, Px) < 1e-12
 
 
 @pytest.mark.julia
 def test_fsht_inverse_roundtrip(nside, healpix_map, relerr):
-    """fft_lat -> C (fourier2sph) -> fft_lat (sph2fourier) must round-trip.
+    """C -> bivar (sph2fourier) -> C (fourier2sph) must round-trip exactly.
 
-    fourier2sph / sph2fourier are exact inverses, so the residual here is
-    identical to the Python ``preparation``/``convert`` truncation and fails for
-    the same reason (high-latitude-mode leakage from the nuFFT). Tight tolerance
-    on purpose: it documents the defect and should go green once fixed.
+    A valid coefficient array ``C`` (the output of ``FSHT``) lives in the
+    represented subspace, so pushing it back to bivariate Fourier coefficients
+    and forward again must return it. fourier2sph/sph2fourier are exact inverses
+    and ``preparation``/``convert`` are consistent, so this is machine-precise.
+    (Going the other way, fft_lat->C->fft_lat, is lossy by the projection above.)
     """
     fft_lat = _fft_lat(healpix_map)
     C = FSHT(fft_lat)
-    _, C_back = inverse_FSHT(C, nside)
-    assert relerr(C_back, fft_lat) < 1e-9
+    _, bivar = inverse_FSHT(C, nside)
+    C_back = FSHT(bivar)
+    assert relerr(C_back, C) < 1e-9

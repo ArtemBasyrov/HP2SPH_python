@@ -31,6 +31,30 @@ def get_ring_indices(nside: int) -> jnp.array:
     return jnp.vstack((start_indices, end_indices, i)).T
 
 
+def ring_first_longitude(nside: int) -> np.array:
+    """Longitude (radians) of the first pixel in each RING-ordered HEALPix ring.
+
+    HEALPix rings are not aligned to phi=0: each ring's first pixel sits half a
+    pixel in (phi = pi/npix) for the polar rings, while the equatorial rings
+    alternate between phi = pi/(4*nside) (a half equatorial pixel) and phi = 0.
+    To reference every ring's longitude Fourier coefficients to a common phi=0
+    origin (the convention healpy's a_lm use), each ring's mode-m coefficient
+    must be multiplied by exp(-i * m * phi_first). Getting this wrong leaves an
+    m-dependent longitude phase in the output alm. Matches ``hp.pix2ang`` exactly.
+    """
+    n_rings = 4 * nside - 1
+    phi0 = np.zeros(n_rings)
+    for r in range(n_rings):
+        i = r + 1  # ring number 1 .. 4*nside-1 (north -> south)
+        if i < nside:  # north polar cap
+            phi0[r] = np.pi / (4 * i)
+        elif i <= 3 * nside:  # equatorial belt
+            phi0[r] = np.pi / (4 * nside) if (i - nside) % 2 == 0 else 0.0
+        else:  # south polar cap
+            phi0[r] = np.pi / (4 * (4 * nside - i))
+    return phi0
+
+
 def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     start_time = time.time()
     """
@@ -58,15 +82,12 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     def process_polar_ring(ring_data):
         num_pts = len(ring_data)
         coeffs = jnp.fft.fft(ring_data, n=num_pts, norm="forward")
-        k_vals = np.fft.fftfreq(num_pts) * num_pts
-        phase_shift = jnp.exp(-1j * jnp.pi * k_vals / (2 * nside))
-        corrected_coeffs = coeffs * phase_shift
 
         # this padding correctly accounts for fft frequencies position in the array
         mid = num_pts // 2
         coeffs_padded = np.zeros(4 * nside, dtype=complex)
-        coeffs_padded[:mid] = corrected_coeffs[:mid]  # Positive frequencies
-        coeffs_padded[-mid:] = corrected_coeffs[-mid:]  # Negative frequencies
+        coeffs_padded[:mid] = coeffs[:mid]  # Positive frequencies
+        coeffs_padded[-mid:] = coeffs[-mid:]  # Negative frequencies
 
         # NB: do NOT rescale by num_pts/(4*nside). With norm='forward' the FFT
         # coefficients are already the true longitude Fourier coefficients of the
@@ -91,8 +112,6 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     fft_coeff[nside - 1 : 3 * nside] = jax.vmap(process_equatorial_ring)(
         jnp.array(ring_data[nside - 1 : 3 * nside])
     )
-    shift = np.exp(-1j * np.pi * np.arange(4 * nside) / (2 * nside))
-    fft_coeff[nside - 1 : 3 * nside : 2] *= shift
     # print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
 
     # Processing of polar rings
@@ -114,6 +133,14 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
         fft_coeff[i] = process_polar_ring(ring_data[i])
         fft_coeff[n_rings - 1 - i] = process_polar_ring(ring_data[n_rings - 1 - i])
     # print(f"Polar ring execution time: {time.time() - start_time0:.6f} seconds")
+
+    # Reference every ring's coefficients to a common phi=0 origin. Each ring's
+    # first pixel is offset by phi_first, so its mode-m FFT coefficient carries a
+    # spurious exp(+i*m*phi_first); divide it out with exp(-i*m*phi_first). m is
+    # the SIGNED frequency (numpy FFT order), so use fftfreq, not arange.
+    m_signed = np.fft.fftfreq(4 * nside) * (4 * nside)
+    phi0 = ring_first_longitude(nside)
+    fft_coeff *= np.exp(-1j * np.outer(phi0, m_signed))
 
     # Inverse FFT
     # start_time0 = time.time()
@@ -179,18 +206,19 @@ def transform_grid_to_healpix(
             grid_data
         )  # Processing all ring with process_equatorial_ring
 
-    # Applying equatorial shift
-    shift = jnp.exp(+1j * jnp.pi * jnp.arange(4 * nside) / (2 * nside))
-    fft_coeff[nside - 1 : 3 * nside : 2] *= shift
+    # Undo the phi=0 referencing applied in the forward transform: shift each
+    # ring's mode-m coefficient back to its native first-pixel longitude with
+    # exp(+i*m*phi_first) (the conjugate of the forward correction).
+    m_signed = np.fft.fftfreq(4 * nside) * (4 * nside)
+    phi0 = ring_first_longitude(nside)
+    fft_coeff = np.asarray(fft_coeff) * np.exp(+1j * np.outer(phi0, m_signed))
 
     eq_rings = jax.vmap(process_equatorial_ring)(fft_coeff[nside - 1 : 3 * nside])
     start_id, _, _ = ring_info[nside - 1]
     _, end_id, _ = ring_info[3 * nside - 1]
     healpix_map[start_id : end_id + 1] = jnp.concatenate(eq_rings)
 
-    # Applying the polar shift
-    fft_coeff[: nside - 1] *= shift  # we can apply the shift to all rings at once
-    fft_coeff[3 * nside :] *= shift
+    # Polar rings: the phi=0 referencing was already undone above for all rows.
     for i in range(nside - 1):
         num_pts = ring_sizes[i]
 
