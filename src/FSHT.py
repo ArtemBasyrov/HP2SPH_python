@@ -94,6 +94,51 @@ def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
     return C
 
 
+def to_healpy_alm(
+    C: np.array, lmax: int, scale: float, mono_factor: float = 2.0
+) -> np.array:
+    """
+    Convert the FastTransforms spherical-harmonic coefficient array ``C`` into a
+    1-D complex ``alm`` in healpy ordering/normalization.
+
+    ``C`` is the (L+1, 2L+1) triangular array from ``fourier2sph``. A degree-l,
+    order-m coefficient lives at row ``l-m`` (m=0 lives at ``C[l, 0]``), and the
+    two real-spherical-harmonic parts of order m sit in columns ``2m-1`` and
+    ``2m``. The conversion to healpy's complex, orthonormal a_lm is:
+
+      * a_{l,0} = (-1)^l * C[l, 0] / scale
+      * a_{l,m} = (-1)^l * C[l-m, 2m-1] / (sqrt(2) * scale)   for m > 0
+
+    The ``(-1)^l`` factor undoes the colatitude-origin phase of the DFS step
+    (without it every odd-l coefficient comes out sign-flipped -- the original
+    cause of the apparent "even-l" power bias). The ``sqrt(2)`` is the standard
+    real<->complex spherical-harmonic factor for m != 0.
+
+    ``scale`` is the pipeline's overall normalization constant (the gain mapping
+    a unit a_{l,0} onto C[l, 0]); it is a single number for a given nside and is
+    most simply obtained by transforming one zonal harmonic, or by matching
+    total power (Parseval) against the input map. ``mono_factor`` is the extra
+    gain on the monopole (the j=0,m=0 cell carries a factor 2 in ``preparation``;
+    empirically ~2.24 with the current DFS pole handling). NOTE: this conversion
+    fixes the sign/ordering/normalization only; a residual O(10-20%) per-mode
+    error remains from the latitude quadrature at lmax = 2*nside (see the project
+    notes on quadrature weights), so it is not bit-exact against hp.map2alm.
+    """
+    alm = np.zeros(((lmax + 1) * (lmax + 2)) // 2, dtype=complex)
+
+    def idx(l, m):
+        return m * (2 * lmax + 1 - m) // 2 + l  # healpy Alm.getidx
+
+    alm[idx(0, 0)] = C[0, 0].real / (scale * mono_factor)
+    for l in range(1, lmax + 1):
+        sign = (-1.0) ** l
+        alm[idx(l, 0)] = sign * C[l, 0].real / scale
+        for m in range(1, l + 1):
+            alm[idx(l, m)] = sign * C[l - m, 2 * m - 1] / (np.sqrt(2.0) * scale)
+
+    return alm
+
+
 def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
     # converting 2D array of g coefficients of Fourier-Chebyshev series
     # into 2D array of bivariate Fourier coefficients.
