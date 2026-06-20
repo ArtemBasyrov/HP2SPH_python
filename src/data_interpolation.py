@@ -68,7 +68,15 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
         coeffs_padded[:mid] = corrected_coeffs[:mid]  # Positive frequencies
         coeffs_padded[-mid:] = corrected_coeffs[-mid:]  # Negative frequencies
 
-        return coeffs_padded * num_pts / (4 * nside)
+        # NB: do NOT rescale by num_pts/(4*nside). With norm='forward' the FFT
+        # coefficients are already the true longitude Fourier coefficients of the
+        # ring (DC = ring mean), independent of how many pixels the ring has.
+        # Zero-padding to 4*nside only extends the (empty) high-frequency band,
+        # so the populated coefficients must be left untouched. The old factor
+        # shrank every polar-ring coefficient by i/nside, which cancelled against
+        # the inverse (so round trips stayed exact) but fed the wrong Fourier
+        # coefficients to DFS/nuFFT/FSHT -- the dominant forward-alm error.
+        return coeffs_padded
 
     def inverse_fft(fft_coeffs):
         return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward").real
@@ -157,7 +165,10 @@ def transform_grid_to_healpix(
         corrected_coeffs_back[-mid:] = fft_coeff[-mid:]
 
         fft_coeffs = jnp.fft.ifft(corrected_coeffs_back, n=num_pts, norm="forward").real
-        return fft_coeffs * (4 * nside) / num_pts
+        # Mirror of the forward change: no num_pts/(4*nside) rescaling. The
+        # forward FFT (norm='forward') already carries the 1/num_pts, so the
+        # ifft (also norm='forward') inverts it exactly with no extra factor.
+        return fft_coeffs
 
     def process_equatorial_ring(fft_coeffs):
         return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward").real
