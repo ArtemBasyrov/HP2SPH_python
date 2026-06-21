@@ -220,18 +220,18 @@ def test_competitive_in_aliasing_regime(nside):
 
 @pytest.mark.julia
 def test_square_band_beats_healpy_at_band_edge():
-    """HP2SPH's accuracy advantage at high ell -- the paper's headline claim.
+    """Square band de-aliases the harsh band edge (NOT the paper's method).
 
-    With the exact square latitude band (``solve_modes = 8*nside+1``) and the
-    polynomial pole fill, HP2SPH resolves the top-of-band coefficients more
-    accurately than healpy's best single-pass quadratures (both ring weights and
-    pixel weights), whose error rises sharply toward the grid's longitude Nyquist
-    (ell ~ 2*nside). Measured on a KNOWN band-limited map over the top quarter
-    band (ell in [3*lmax/4+1, lmax]); the metric is the robust total-L2 band error.
-
-    (The compact default band is scalable but aliases above |k|=2*nside, so it
-    only reaches healpy-ring parity here; the square band de-aliases that and
-    wins, at the cost of an O(nside^3) ill-conditioned solve -- nside <= ~64.)
+    This is a niche regime, kept as a guard, NOT the paper reproduction (that is
+    test_compact_band_reproduces_paper_high_ell, which uses the scalable default
+    band -- the paper's actual method). Here the signal is the WORST case for the
+    compact band: flat-spectrum, fully band-limited, so its top band carries FULL
+    power and the polar-undersampling aliasing the compact band folds in is
+    maximally exposed. The exact square latitude band (solve_modes = 8*nside+1)
+    resolves that above-|k|=2*nside content, so it beats healpy ring AND pixel
+    weights at the top quarter band even at low nside. For realistic SMOOTH signals
+    the compact band already matches this, so the square band's O(nside^3)
+    ill-conditioned solve is rarely worth it. Robust total-L2 band error.
     """
     nside = 32
     lmax = 2 * nside
@@ -249,6 +249,44 @@ def test_square_band_beats_healpy_at_band_edge():
     e_pixel = _band_abs_error(hpp, alm_true, lmax, lo, hi)
     assert e_hp2sph < e_ring, f"hp2sph {e_hp2sph:.3e} !< healpy ring {e_ring:.3e}"
     assert e_hp2sph < e_pixel, f"hp2sph {e_hp2sph:.3e} !< healpy pixel {e_pixel:.3e}"
+
+
+@pytest.mark.julia
+def test_compact_band_reproduces_paper_high_ell():
+    """THE PAPER REPRODUCTION (Drake & Wright Fig 8b), using the SCALABLE default.
+
+    The paper's own method is the well-conditioned truncated latitude solve (their
+    "m = 4*nside+1 modes", = our compact default band) -- NOT a square/exact solve.
+    Its headline is a high-ell phenomenon: healpy's single-pass quadrature error
+    GROWS toward high ell (ring weights diverge for ell > ~200) while HP2SPH stays
+    accurate, so HP2SPH wins by a growing margin in the upper band. This needs
+    ell >~ 200, i.e. nside >~ 128 -- at nside <= 64 the two look similar (NOT the
+    paper's regime). Metric = the paper's per-ell C_ell relative error.
+
+    nside=128 (lmax=256), smooth signal (sqrt(Cl) ~ (1+l)^-1.5). At the upper band
+    HP2SPH beats ring weights by ~5-9x (measured ~6-9x); we assert >=3x with margin.
+    Compact-band forward is ~0.5 s here, so the test stays cheap.
+    """
+    nside = 128
+    lmax = 2 * nside
+    mmax = 2 * nside - 1
+    alm_true = _known_alm(lmax, mmax, slope=1.5)  # smooth (the paper's regime)
+    mp = hp.alm2map(alm_true, nside=nside, lmax=lmax)
+
+    rec = forward_alm(mp, lmax=lmax)  # compact default band, scale = 1/(2pi)
+    hpr = hp.map2alm(mp, lmax=lmax, use_weights=True, iter=0)  # ring weights
+
+    cl_true = hp.alm2cl(alm_true, lmax=lmax)
+    lo, hi = 3 * lmax // 4, 7 * lmax // 8  # upper band, below the very Nyquist edge
+    with np.errstate(divide="ignore", invalid="ignore"):
+        e_hp2sph = np.abs(hp.alm2cl(rec, lmax=lmax) - cl_true) / cl_true
+        e_ring = np.abs(hp.alm2cl(hpr, lmax=lmax) - cl_true) / cl_true
+    r_hp2sph = float(np.sqrt(np.nanmean(e_hp2sph[lo : hi + 1] ** 2)))
+    r_ring = float(np.sqrt(np.nanmean(e_ring[lo : hi + 1] ** 2)))
+    assert r_hp2sph < r_ring / 3.0, (
+        f"paper claim not reproduced: HP2SPH C_ell err {r_hp2sph:.3e} not <<"
+        f" ring weights {r_ring:.3e} over ell {lo}-{hi}"
+    )
 
 
 @pytest.mark.julia
