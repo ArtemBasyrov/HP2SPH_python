@@ -41,8 +41,12 @@ def preparation(bivar_coeffs: jnp.array) -> jnp.array:
     # transform X into g array, size (L+1, 2*L+1)
     g = np.zeros((L + 1, 2 * L + 1), dtype=complex)
 
-    # rearange X into [0 ,-1, 1, -2, 2, ...] order along k
-    indx = np.fft.fftfreq(2 * L + 1, d=1) * (2 * L + 1)
+    # rearange X into [0 ,-1, 1, -2, 2, ...] order along k. These are integer mode
+    # numbers, but fftfreq*(2L+1) returns floats with rounding error that grows with
+    # L; rint to exact ints so the `% 2` parity test below cannot misclassify a mode.
+    # (Without this, ~20-80 modes flip even<->odd at L=512/2048 -> nside 128/512 lost
+    # ~20% of the transform, while nside 64/256 happened to round cleanly.)
+    indx = np.rint(np.fft.fftfreq(2 * L + 1, d=1) * (2 * L + 1)).astype(int)
     indx = np.fft.fftshift(indx)
     sel = np.argsort(np.abs(indx), kind="stable")
     indx = indx[sel]

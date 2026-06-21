@@ -28,17 +28,33 @@ def test_nufft_output_shape(nside, healpix_map):
     assert fft_lat.shape[1] == 4 * nside
 
 
-def test_nufft_roundtrip(nside, healpix_map, relerr):
-    """Forward (CG solve) then backward (type-2 eval) recovers the samples.
+def test_nufft_roundtrip_square_is_exact(nside, healpix_map, relerr):
+    """SQUARE interpolation (one mode per sample) reproduces the samples exactly.
 
-    The forward solve interpolates the samples, so direct re-evaluation must
-    return them; this is limited only by the CG tolerance (rtol=1e-6).
+    With ``solve_modes = 8*nside+1`` the latitude system is square, so the forward
+    solve interpolates the samples and direct re-evaluation returns them. The
+    Vandermonde is ill-conditioned, so the dense SVD solver is used (CG on the
+    normal equations would floor at high nside).
     """
     dfs = _dfs_coeffs(healpix_map)
-    fft_lat = apply_nuFFT(dfs)
+    fft_lat = apply_nuFFT(dfs, solver="svd", solve_modes=8 * nside + 1)
     recovered = inverse_nuFFT(fft_lat)
     assert recovered.shape == dfs.shape
     assert relerr(recovered, dfs) < 1e-4
+
+
+def test_nufft_roundtrip_default_is_bounded_projection(nside, healpix_map, relerr):
+    """The default (well-conditioned 4*nside+1 band) is a bounded projection.
+
+    It does NOT interpolate every sample -- it drops the above-band latitude
+    content the clustered grid can't represent (polar aliasing) -- so the nuFFT
+    round trip is a few percent, not machine zero. That is the price for the
+    well-conditioned, scalable solve; the residual shrinks with nside.
+    """
+    dfs = _dfs_coeffs(healpix_map)
+    recovered = inverse_nuFFT(apply_nuFFT(dfs))
+    assert recovered.shape == dfs.shape
+    assert relerr(recovered, dfs) < 0.2
 
 
 def test_voronoi_weights_sum_to_domain():

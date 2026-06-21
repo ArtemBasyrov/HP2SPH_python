@@ -24,15 +24,33 @@ def _sub_band(alm, lmax, cut=1):
 
 
 @pytest.mark.julia
-def test_forward_backward_map_roundtrip(nside, healpix_map, relerr):
-    """map -> C -> map is self-consistent to near machine precision.
+def test_forward_backward_map_roundtrip_exact_mode(nside, healpix_map, relerr):
+    """SQUARE-interpolation mode round-trips the map to near machine precision.
 
-    Checks invertibility of the whole chain (independent of the absolute alm
-    normalization). The CG nuFFT interpolates the samples, so this stays exact.
+    With ``solve_modes = 8*nside+1`` (one mode per DFS sample) + the dense SVD
+    solver, the latitude system interpolates every sample, so map -> C -> map is
+    bit-exact (independent of the absolute alm normalization). This is the
+    invertibility-first regime; it is only well-conditioned up to nside ~64.
+    """
+    kw = dict(solver="svd", solve_modes=8 * nside + 1)
+    C = forward_C(healpix_map, **kw)
+    recovered = backward_map(C, nside)
+    assert relerr(recovered, healpix_map) < 1e-5
+
+
+@pytest.mark.julia
+def test_forward_backward_map_roundtrip_default(nside, healpix_map, relerr):
+    """The default (well-conditioned, scalable) path round-trips to a few percent.
+
+    The default ``solve_modes = 4*nside+1`` band is a projection -- it drops the
+    above-band polar-aliasing content -- so the round trip is accurate but not
+    bit-exact. The residual is large at very coarse nside (~10% at nside=4, lmax=8,
+    where the dropped band is a big fraction) and shrinks quickly with nside
+    (~2e-2 by nside=16, ~5e-4 by nside=512 -- see the high-nside conditioning test).
     """
     C = forward_C(healpix_map)
     recovered = backward_map(C, nside)
-    assert relerr(recovered, healpix_map) < 1e-5
+    assert relerr(recovered, healpix_map) < 1.5e-1
 
 
 @pytest.mark.julia
@@ -54,7 +72,9 @@ def test_forward_alm_matches_input(nside, lmax, healpix_map, random_alm, relerr)
     alm = forward_alm(healpix_map, lmax=lmax, scale=scale)
     sel = _sub_band(alm, lmax)
     err = relerr(alm[sel], random_alm[sel])
-    assert err < 2e-2, f"forward alm rel error {err:.4f} (nside={nside}, l<=lmax-1)"
+    # Default (well-conditioned 4*nside+1) band: ~3e-2 at the coarse nside=4
+    # (lmax=8), improving to ~1e-2 by nside=16 (see the convergence test).
+    assert err < 3.5e-2, f"forward alm rel error {err:.4f} (nside={nside}, l<=lmax-1)"
 
 
 @pytest.mark.julia
@@ -70,7 +90,7 @@ def test_forward_alm_matches_healpy(nside, lmax, healpix_map, relerr):
     hp_alm = hp.map2alm(healpix_map, lmax=lmax, use_weights=True)
     sel = _sub_band(alm, lmax)
     err = relerr(alm[sel], hp_alm[sel])
-    assert err < 2e-2, f"forward alm vs map2alm rel error {err:.4f} (nside={nside})"
+    assert err < 3.5e-2, f"forward alm vs map2alm rel error {err:.4f} (nside={nside})"
 
 
 @pytest.mark.julia
