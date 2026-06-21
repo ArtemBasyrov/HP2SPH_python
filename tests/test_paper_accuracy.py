@@ -30,16 +30,16 @@ What this measurement found at the resolutions reachable here (nside<=32):
   slow Julia-subprocess FSHT, so the superiority claim is NOT reproduced here --
   only the methodology, the convergence, and parity with healpy at low nside.
 
-Run (needs Julia / FastTransforms.jl)::
+Run (needs Julia / FastTransforms.jl, or the in-process libfasttransforms
+backend; use the interpreter from an env with the pipeline deps)::
 
     KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 \
-        /Users/basyrov/micromamba/envs/s2fft/bin/python3 -m pytest \
-        tests/test_paper_accuracy.py -s
+        python -m pytest tests/test_paper_accuracy.py -s
 
 or as a standalone report (prints per-ell tables + saves a plot)::
 
     KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 \
-        /Users/basyrov/micromamba/envs/s2fft/bin/python3 tests/test_paper_accuracy.py
+        python tests/test_paper_accuracy.py
 """
 
 import os

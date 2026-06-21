@@ -1,9 +1,9 @@
 """Shared pytest fixtures and environment setup for the HP2SPH test suite.
 
-Run from the repo root with the ``s2fft`` micromamba env, e.g.::
+Run from the repo root with an env that has the pipeline deps (substitute its
+interpreter for ``python``)::
 
-    KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 \
-        /Users/basyrov/micromamba/envs/s2fft/bin/python3 -m pytest
+    KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python -m pytest
 
 The two env vars are also set defensively below (they only take effect if the
 relevant libraries have not been imported yet), and ``-m "not julia"`` skips the
