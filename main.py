@@ -119,9 +119,10 @@ def backward(alm: np.array) -> np.array:
     - mp (numpy.ndarray): The HEALPix map data.
     """
 
-    # alm/C is the FastTransforms triangular array of shape (L+1, 2*L+1) with
-    # internal band limit L = 4*nside, so nside = (rows - 1) // 4.
-    NSIDE = (alm.shape[0] - 1) // 4
+    # alm/C is the FastTransforms triangular array of shape (L+1, 2*L+1). With the
+    # default compact band the internal band limit is L = lmax = 2*nside, so
+    # nside = (rows - 1) // 2. (The legacy square mode used L = 4*nside -> // 4.)
+    NSIDE = (alm.shape[0] - 1) // 2
     _, C = inverse_FSHT(alm, NSIDE)
     fft_lat = inverse_nuFFT(C)
     fft_coeff = DFS_inverse(fft_lat)

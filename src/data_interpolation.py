@@ -81,7 +81,11 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
 
     def process_polar_ring(ring_data):
         num_pts = len(ring_data)
-        coeffs = jnp.fft.fft(ring_data, n=num_pts, norm="forward")
+        # numpy (not jax) FFT: each polar ring has a different length so they can't
+        # be batched into one vmap, and a per-ring jax dispatch costs ~25 ms of
+        # tracing/dispatch overhead -- ~2*nside of them dominate the whole pipeline
+        # (13 s at nside=256). numpy's FFT on these small arrays is ~microseconds.
+        coeffs = np.fft.fft(np.asarray(ring_data), n=num_pts, norm="forward")
 
         # this padding correctly accounts for fft frequencies position in the array
         mid = num_pts // 2
@@ -191,7 +195,8 @@ def transform_grid_to_healpix(
         corrected_coeffs_back[:mid] = fft_coeff[:mid]
         corrected_coeffs_back[-mid:] = fft_coeff[-mid:]
 
-        fft_coeffs = jnp.fft.ifft(corrected_coeffs_back, n=num_pts, norm="forward").real
+        # numpy (not jax) FFT for the same per-ring-dispatch reason as the forward.
+        fft_coeffs = np.fft.ifft(corrected_coeffs_back, n=num_pts, norm="forward").real
         # Mirror of the forward change: no num_pts/(4*nside) rescaling. The
         # forward FFT (norm='forward') already carries the 1/num_pts, so the
         # ifft (also norm='forward') inverts it exactly with no extra factor.

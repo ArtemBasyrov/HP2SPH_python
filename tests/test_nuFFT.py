@@ -19,13 +19,17 @@ def _dfs_coeffs(healpix_map):
 
 def test_nufft_output_shape(nside, healpix_map):
     dfs = _dfs_coeffs(healpix_map)
-    m_samples = dfs.shape[0]  # = 2*(4*nside-1) + 2 ~ 8*nside
     fft_lat = apply_nuFFT(dfs)
     n_modes = fft_lat.shape[0]
-    # smallest odd count >= m_samples
-    assert n_modes >= m_samples
+    # default = compact band-limited band |k| <= 2*nside -> 4*nside+1 modes (odd),
+    # i.e. L = lmax = 2*nside for the FSHT.
+    assert n_modes == 4 * nside + 1
     assert n_modes % 2 == 1
     assert fft_lat.shape[1] == 4 * nside
+
+    # the square (exact-interpolation) band is the wider one
+    sq = apply_nuFFT(dfs, solver="svd", solve_modes=8 * nside + 1)
+    assert sq.shape[0] == 8 * nside + 1
 
 
 def test_nufft_roundtrip_square_is_exact(nside, healpix_map, relerr):

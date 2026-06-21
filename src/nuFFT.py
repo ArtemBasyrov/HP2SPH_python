@@ -11,14 +11,17 @@ the band:
 
 ``apply_nuFFT`` exposes two regimes (``solve_modes`` + ``solver``):
 
-* DEFAULT -- ``solve_modes = 4*nside+1`` (|k| <= 2*nside), ``solver="cg"``. This is
-  the band a band-limited (lmax = 2*nside) signal lives in; the Vandermonde is
-  WELL conditioned at every nside, so finufft + CG converges in a few iterations at
-  machine precision and stays O(N log N). The solved spectrum is zero-padded up to
-  N = 8*nside+1 (the L = 4*nside array the FSHT expects -- see ``FSHT.preparation``).
-  Accurate (forward & round trip both converge, ~1e-3 by nside 256) and SCALABLE to
-  nside 512+. The small round-trip residual is above-band polar aliasing the band
-  can't (and arguably shouldn't) represent. This is the paper's truncation.
+* DEFAULT -- ``solve_modes = 4*nside+1`` (|k| <= 2*nside), ``solver="cg"``,
+  ``N_modes = solve_modes`` (no zero-pad). This is the band a band-limited
+  (lmax = 2*nside) signal lives in; the Vandermonde is WELL conditioned at every
+  nside, so finufft + CG converges in a few iterations at machine precision and stays
+  O(N log N). The result feeds the FSHT at the NATURAL band L = lmax = 2*nside (the
+  compact (L+1, 2L+1) g-array) -- half the rows/cols and, since ``fourier2sph`` is
+  ~O(L^3), ~8x faster than the old L = 4*nside array, at bit-identical accuracy.
+  Accurate (forward & round trip both converge, ~1e-3 by nside 256, ~1e-4 by 1024)
+  and SCALABLE to nside 1024-2048. The small round-trip residual is above-band polar
+  aliasing the band can't (and arguably shouldn't) represent -- the paper's truncation.
+  (Set ``N_modes > solve_modes`` to zero-pad into a wider FSHT band; rarely needed.)
 
 * EXACT round trip -- ``solve_modes = 8*nside+1`` (the SQUARE interpolation, one mode
   per sample), ``solver="svd"``. Reproduces the map bit-for-bit, but the square
@@ -333,15 +336,20 @@ def apply_nuFFT(
       Vandermonde. O(nside^3) one-off factorisation; needed only for the
       ill-conditioned square band, where it reaches ~1e-6 round trip up to nside 64.
 
-    ``N_modes`` is the FSHT band (default ``8*nside+1`` -> L = 4*nside); ``rcond``
-    regularises the SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT.
+    ``N_modes`` is the latitude band handed to the FSHT (-> L = (N_modes-1)//2).
+    It defaults to ``solve_modes``, i.e. the FSHT runs at the natural band L = lmax =
+    2*nside (the compact `(L+1, 2L+1)` g-array). The FastTransforms ``fourier2sph`` is
+    ~O(L^3), so this compact band is ~8x faster and uses half the memory of the old
+    L = 4*nside array, with bit-identical accuracy now that the `preparation` float-
+    parity bug is fixed. Set ``N_modes`` larger than ``solve_modes`` to zero-pad the
+    solved spectrum into a wider FSHT band (rarely needed). ``rcond`` regularises the
+    SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT.
     """
     nside = mp.shape[1] // 4
-    M_samples = 8 * nside  # latitude samples after the DFS doubling
-    if N_modes is None:
-        N_modes = _default_N_modes(M_samples)  # 8*nside+1, the band FSHT expects
     if solve_modes is None:
         solve_modes = 4 * nside + 1  # well-conditioned latitude band (|k| <= 2*nside)
+    if N_modes is None:
+        N_modes = solve_modes  # compact: FSHT at L = (solve_modes-1)//2 = lmax
 
     DFT_upsampled_lat = _upsampled_latitudes(nside)
 
