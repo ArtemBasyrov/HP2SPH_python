@@ -3,6 +3,18 @@ import jax.numpy as jnp
 import subprocess
 import json
 
+# Prefer the in-process libfasttransforms backend (no Julia subprocess / JSON).
+# Falls back to the Julia scripts below if the C library can't be loaded, so the
+# pipeline keeps working until a clean libfasttransforms is installed (see
+# src/ft_sphere.py for library resolution via the FASTTRANSFORMS_LIB env var).
+try:
+    from .ft_sphere import fourier2sph as _ft_fourier2sph
+    from .ft_sphere import sph2fourier as _ft_sph2fourier
+
+    _HAVE_FT = True
+except ImportError:
+    _HAVE_FT = False
+
 
 def preparation(bivar_coeffs: jnp.array) -> jnp.array:
     # bivar_coeffs: (2*L+1 latitude modes [centered], 4*NSIDE longitude [natural
@@ -93,8 +105,10 @@ def call_Julia(g: jnp.array, scriptname: str) -> jnp.array:
 def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
     g = preparation(bivar_coeffs)
 
-    output_array = call_Julia(g, scriptname="src/julia_sph.jl")
-    C = np.array(output_array)
+    if _HAVE_FT:
+        C = _ft_fourier2sph(g)
+    else:
+        C = np.array(call_Julia(g, scriptname="src/julia_sph.jl"))
 
     return C
 
@@ -208,8 +222,10 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
 
 
 def inverse_FSHT(alm: jnp.array, nside: int) -> jnp.array:
-    output_array = call_Julia(alm, scriptname="src/julia_sph_inverse.jl")
-    bivar_coeffs = np.array(output_array)
+    if _HAVE_FT:
+        bivar_coeffs = _ft_sph2fourier(np.asarray(alm))
+    else:
+        bivar_coeffs = np.array(call_Julia(alm, scriptname="src/julia_sph_inverse.jl"))
 
     C = convert_to_bivar_coeffs(bivar_coeffs, nside)
 
