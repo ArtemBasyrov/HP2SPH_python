@@ -117,8 +117,11 @@ def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
     return C
 
 
+SCALE_2PI = 1.0 / (2.0 * np.pi)  # first-principles global gain (see to_healpy_alm)
+
+
 def to_healpy_alm(
-    C: np.array, lmax: int, scale: float, mono_factor: float = 1.0
+    C: np.array, lmax: int, scale: float = SCALE_2PI, mono_factor: float = 1.0
 ) -> np.array:
     """
     Convert the FastTransforms spherical-harmonic coefficient array ``C`` into a
@@ -138,10 +141,17 @@ def to_healpy_alm(
     real<->complex spherical-harmonic factor for m != 0.
 
     ``scale`` is the pipeline's overall normalization constant (the gain mapping
-    a unit a_{l,0} onto C[l, 0]); it is a single number for a given nside,
-    converging to 1/(2*pi), and is most simply obtained by transforming one
-    zonal harmonic. ``mono_factor`` defaults to 1: once ``preparation`` no longer
-    double-weights the latitude-DC (T_0) row, the monopole needs no special gain.
+    a unit a_{l,0} onto C[l, 0]). It is EXACTLY ``1/(2*pi)`` from first principles,
+    independent of nside -- single-harmonic probes show every well-resolved
+    (l, m) recovers with gain exactly 1/(2*pi) (sectoral m=l harmonics, which the
+    grid samples best, hit it to ~1e-9 at every nside; the small per-mode
+    deviations are latitude QUADRATURE error, not a normalization that a better
+    constant could absorb -- a best-fit global scale differs from 1/(2*pi) by only
+    ~5e-5 and does not reduce the per-l error). So ``scale`` defaults to
+    ``SCALE_2PI`` and the old empirical zonal-probe calibration is unnecessary;
+    ``tests/pipeline_helpers.calibrate_scale`` is kept only for verification.
+    ``mono_factor`` defaults to 1: once ``preparation`` no longer double-weights
+    the latitude-DC (T_0) row, the monopole needs no special gain.
 
     Only column ``2m-1`` is used: ``preparation``'s real-SH packing makes column
     ``2m`` the complex conjugate of ``2m-1``, so it carries no extra information.

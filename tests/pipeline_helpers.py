@@ -12,7 +12,7 @@ from src.data_interpolation import (
 )
 from src.double_fourier_sphere import DFS, DFS_inverse
 from src.nuFFT import apply_nuFFT, inverse_nuFFT
-from src.FSHT import FSHT, inverse_FSHT, to_healpy_alm
+from src.FSHT import FSHT, inverse_FSHT, to_healpy_alm, SCALE_2PI
 
 
 def forward_C(healpix_map, **nufft_kw):
@@ -29,8 +29,12 @@ def forward_C(healpix_map, **nufft_kw):
     return FSHT(fft_lat)
 
 
-def forward_alm(healpix_map, lmax, scale, mono_factor=1.0, **nufft_kw):
-    """Full forward transform to a healpy-ordered alm using a given ``scale``."""
+def forward_alm(healpix_map, lmax, scale=SCALE_2PI, mono_factor=1.0, **nufft_kw):
+    """Full forward transform to a healpy-ordered alm.
+
+    ``scale`` defaults to the first-principles ``1/(2*pi)`` (see
+    ``FSHT.to_healpy_alm``); pass ``calibrate_scale(...)`` only to verify.
+    """
     C = forward_C(healpix_map, **nufft_kw)
     return to_healpy_alm(C, lmax=lmax, scale=scale, mono_factor=mono_factor)
 
