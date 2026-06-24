@@ -11,30 +11,25 @@ From the repo root, with a Python env that has the pipeline deps (substitute its
 interpreter for `python` below):
 
 ```bash
-KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python -m pytest
+python -m pytest
 ```
 
-- `OMP_NUM_THREADS=1` is required or the finufft + scipy-CG step deadlocks.
-- `KMP_DUPLICATE_LIB_OK=TRUE` avoids the libomp double-load abort.
-- jax x64 and these env vars are also set defensively in `conftest.py`.
+- The `KMP_DUPLICATE_LIB_OK` OpenMP guard and JAX float64 are set automatically
+  by the package on import (and defensively in `conftest.py`), so no env-var
+  prefix is needed.
+- Set `OMP_NUM_THREADS=1` if the finufft + scipy-CG step misbehaves with threads.
 
-Skip the (slow) Julia / FastTransforms.jl tests:
+Skip the tests that need the `libfasttransforms` C library:
 
 ```bash
-... -m "not julia"
+... -m "not ft"
 ```
 
-**FSHT backend.** The FSHT-stage tests (and the pipeline) use the in-process
-`libfasttransforms` backend when it is available, falling back to the Julia
-subprocess otherwise (see the FSHT backend notes in the top-level `CLAUDE.md`).
-Set `FASTTRANSFORMS_LIB` to the built library's path to use the fast path:
-
-```bash
-FASTTRANSFORMS_LIB=/path/to/libfasttransforms.dylib \
-KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python -m pytest
-```
-
-`test_ft_sphere.py` **skips** entirely if the library can't be loaded.
+**FSHT backend.** The FSHT stage runs in-process through the `libfasttransforms`
+C library, which is located automatically (conda/venv `lib`, the OS loader path,
+a `lib/` dir in the checkout, or `$FASTTRANSFORMS_LIB`); see the top-level
+`README.md` for how to build/install it. Tests that need it `skip` cleanly when
+it cannot be loaded.
 
 ## Layout
 
@@ -43,8 +38,8 @@ KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python -m pytest
 | `test_data_interpolation.py` | 1 | ring geometry, grid shape, HEALPix<->grid round trip (exact) |
 | `test_double_fourier_sphere.py` | 2 | DFS shapes, DFS round trip (exact), ring-area weights |
 | `test_nuFFT.py` | 3 | nuFFT shapes, forward/backward round trip, Voronoi weights |
-| `test_FSHT.py` | 4 | `preparation`<->`convert` round trip, fourier2sph<->sph2fourier (julia) |
-| `test_ft_sphere.py` | 4 | in-process `libfasttransforms` backend == Julia, bit-for-bit (skips w/o the C library) |
+| `test_FSHT.py` | 4 | `preparation`<->`convert` round trip, fourier2sph<->sph2fourier (`ft`) |
+| `test_ft_sphere.py` | 4 | in-process `libfasttransforms` backend round trip (skips w/o the C library) |
 | `test_pipeline.py` | all | full map round trip (exact), **forward alm vs input / vs map2alm** |
 | `test_paper_accuracy.py` | all | paper-style known-alm per-`l` error + convergence vs `nside`, compared to healpy |
 

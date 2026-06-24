@@ -26,20 +26,18 @@ What this measurement found at the resolutions reachable here (nside<=32):
   healpy-quality analysis but does not beat it here.
 * The paper's headline accuracy *advantage* over libsharp is a high-ell /
   high-nside (Nside~2048, ell~2000) effect where libsharp's quadrature error
-  accumulates and iteration stops converging; that regime is out of reach of the
-  slow Julia-subprocess FSHT, so the superiority claim is NOT reproduced here --
-  only the methodology, the convergence, and parity with healpy at low nside.
+  accumulates and iteration stops converging; that regime needs nside >= 128 and
+  is not exercised by the small-nside cases here -- only the methodology, the
+  convergence, and parity with healpy at low nside.
 
-Run (needs Julia / FastTransforms.jl, or the in-process libfasttransforms
-backend; use the interpreter from an env with the pipeline deps)::
+Run (needs the libfasttransforms C library; use the interpreter from an env with
+the pipeline deps)::
 
-    KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 \
-        python -m pytest tests/test_paper_accuracy.py -s
+    python -m pytest tests/test_paper_accuracy.py -s
 
 or as a standalone report (prints per-ell tables + saves a plot)::
 
-    KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 \
-        python tests/test_paper_accuracy.py
+    python tests/test_paper_accuracy.py
 """
 
 import os
@@ -63,7 +61,10 @@ import numpy as np
 import healpy as hp
 import pytest
 
-from tests.pipeline_helpers import forward_alm, calibrate_scale
+# The pipeline helpers load the C library on import; skip cleanly if it is missing.
+pytest.importorskip("src.ft_sphere")
+
+from tests.pipeline_helpers import forward_alm, calibrate_scale  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +195,7 @@ def _band_abs_error(alm_rec, alm_true, lmax, lo, hi):
 # --------------------------------------------------------------------------- #
 # Tests                                                                        #
 # --------------------------------------------------------------------------- #
-@pytest.mark.julia
+@pytest.mark.ft
 def test_competitive_in_aliasing_regime(nside):
     """In the paper's regime (smooth, not band-limited) HP2SPH matches healpy.
 
@@ -206,7 +207,7 @@ def test_competitive_in_aliasing_regime(nside):
     above-band latitude content, so in this aliasing regime it runs a touch behind
     healpy at coarse nside (ratio ~1.24 @ ns8) -- still on par. The paper's accuracy
     *advantage* over libsharp is a high-ell / high-nside (Nside~2048, ell~2000)
-    phenomenon, out of reach of this slow Julia-subprocess pipeline.
+    phenomenon, not exercised by the small-nside cases here.
     """
     m = measure(nside, signal_lmax=4 * nside, slope=1.5)
     lmax = m["lmax"]
@@ -218,7 +219,7 @@ def test_competitive_in_aliasing_regime(nside):
     )
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_square_band_beats_healpy_at_band_edge():
     """Square band de-aliases the harsh band edge (NOT the paper's method).
 
@@ -251,7 +252,7 @@ def test_square_band_beats_healpy_at_band_edge():
     assert e_hp2sph < e_pixel, f"hp2sph {e_hp2sph:.3e} !< healpy pixel {e_pixel:.3e}"
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_compact_band_reproduces_paper_high_ell():
     """THE PAPER REPRODUCTION (Drake & Wright Fig 8b), using the SCALABLE default.
 
@@ -289,7 +290,7 @@ def test_compact_band_reproduces_paper_high_ell():
     )
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_forward_converges_with_nside():
     """The known-alm error must shrink as nside grows (spectral convergence).
 

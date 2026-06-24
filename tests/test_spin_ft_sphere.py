@@ -52,8 +52,8 @@ def test_spin0_matches_scalar():
 
     Spin-0 spin-weighted harmonics ARE the ordinary spherical harmonics, so the
     spin path at s=0 must reproduce the scalar transform. ``fourier2sph`` carries
-    the legacy ``np.conj`` (Julia-pipeline contract); the new spin path does not,
-    so compare against the conjugate.
+    the scalar ``np.conj`` contract; the spin path does not, so compare against the
+    conjugate.
     """
     rng = np.random.default_rng(7)
     g = _random_g(8, rng)

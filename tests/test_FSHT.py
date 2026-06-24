@@ -1,17 +1,24 @@
-"""Stage 4: fast spherical-harmonic transform (FastTransforms.jl bridge).
+"""Stage 4: fast spherical-harmonic transform (libfasttransforms backend).
 
 The ``preparation`` <-> ``convert_to_bivar_coeffs`` round trip is pure Python.
-Tests that actually run ``fourier2sph`` / ``sph2fourier`` shell out to Julia and
-are marked ``julia`` so they can be skipped with ``-m "not julia"``.
+Tests that actually run ``fourier2sph`` / ``sph2fourier`` need the C library and
+are marked ``ft`` so they can be skipped with ``-m "not ft"``.
 """
 
-import numpy as np
 import pytest
 
-from src.data_interpolation import transform_healpix_to_grid
-from src.double_fourier_sphere import DFS
-from src.nuFFT import apply_nuFFT
-from src.FSHT import preparation, convert_to_bivar_coeffs, FSHT, inverse_FSHT
+# The FSHT module loads the C library on import; skip cleanly if it is missing.
+pytest.importorskip("src.ft_sphere")
+
+from src.data_interpolation import transform_healpix_to_grid  # noqa: E402
+from src.double_fourier_sphere import DFS  # noqa: E402
+from src.nuFFT import apply_nuFFT  # noqa: E402
+from src.FSHT import (  # noqa: E402
+    preparation,
+    convert_to_bivar_coeffs,
+    FSHT,
+    inverse_FSHT,
+)
 
 
 def _fft_lat(healpix_map):
@@ -46,7 +53,7 @@ def test_preparation_convert_are_consistent_inverses(nside, healpix_map, relerr)
     assert relerr(PPx, Px) < 1e-12
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_fsht_inverse_roundtrip(nside, healpix_map, relerr):
     """C -> bivar (sph2fourier) -> C (fourier2sph) must round-trip exactly.
 

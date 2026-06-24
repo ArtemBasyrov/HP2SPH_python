@@ -1,52 +1,47 @@
-import healpy as hp
-import numpy as np
-import time
-from astropy.io import fits
+"""HP2SPH command-line entry point and FITS I/O helpers.
 
+Run from the repo root, e.g.::
+
+    python main.py path/to/sky_map.fits
+
+The OpenMP guard and JAX float64 are enabled automatically on import (see
+``src/_bootstrap.py``), so no environment variables need to be set by hand.
 """
-from .src.data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
-from .src.double_fourier_sphere import DFS, DFS_inverse
-from .src.nuFFT import apply_nuFFT, inverse_nuFFT
-from .src.FSHT import FSHT, inverse_FSHT
-"""
+
+import argparse  # noqa: E402
+import time  # noqa: E402
+
+# Import the package first: this sets the OpenMP env guards (before any library
+# that links libomp loads) and enables JAX float64. Must precede healpy/numpy/jax.
+from src import _bootstrap
+
+_bootstrap.enable_x64()
+
+import healpy as hp  # noqa: E402
+import numpy as np  # noqa: E402
+from astropy.io import fits  # noqa: E402
+
+from src.data_interpolation import (  # noqa: E402
+    transform_healpix_to_grid,
+    transform_grid_to_healpix,
+)
+from src.double_fourier_sphere import DFS, DFS_inverse  # noqa: E402
+from src.nuFFT import apply_nuFFT, inverse_nuFFT  # noqa: E402
+from src.FSHT import FSHT, inverse_FSHT  # noqa: E402
 
 
 def save_to_fits(data, filename):
-    """
-    Save a numpy array to a FITS file.
-
-    Parameters:
-    - data (numpy.ndarray): The data to save.
-    - filename (str): The name of the FITS file to create.
-    """
-    # Separate real and imaginary parts
-    data_real = np.real(data)
-    data_imag = np.imag(data)
-
-    # Save real and imaginary parts to FITS file
-    hdu_real = fits.PrimaryHDU(data_real)
-    hdu_imag = fits.ImageHDU(data_imag, name="IMAGINARY")
-    hdul = fits.HDUList([hdu_real, hdu_imag])
-    hdul.writeto(filename, overwrite=True)
+    """Save a complex numpy array to a FITS file (real + IMAGINARY HDUs)."""
+    hdu_real = fits.PrimaryHDU(np.real(data))
+    hdu_imag = fits.ImageHDU(np.imag(data), name="IMAGINARY")
+    fits.HDUList([hdu_real, hdu_imag]).writeto(filename, overwrite=True)
     print(filename + " saved as FITS file")
 
 
 def read_fits(filename):
-    """
-    Read a FITS file and return the data.
-
-    Parameters:
-    - filename (str): The name of the FITS file to read.
-    """
-    # Open the FITS file
+    """Read a complex array saved by :func:`save_to_fits`."""
     with fits.open(filename) as hdul:
-        alm_real = hdul[0].data
-        alm_imag = hdul["IMAGINARY"].data
-
-        # Combine real and imaginary parts into a complex array
-        alm = alm_real + 1j * alm_imag
-
-    return alm
+        return hdul[0].data + 1j * hdul["IMAGINARY"].data
 
 
 def calc_cl(alm, lmax=None):
@@ -72,23 +67,16 @@ def calc_cl(alm, lmax=None):
     return cl
 
 
-def forward(mp: np.array) -> np.array:
+def forward(mp: np.array, save: bool = False) -> np.array:
+    """Forward transform: HEALPix map -> spherical-harmonic coefficient array.
+
+    ``mp`` is a 3-row (I, Q, U) map; only intensity (I) is transformed. Set
+    ``save=True`` to also dump the result to ``alm_array_cg_<nside>.fits``.
     """
-    Perform the forward transformation from HEALPix map to spherical harmonics.
-
-    Parameters:
-    - mp (numpy.ndarray): The HEALPix map data.
-
-    Returns:
-    - alm (numpy.ndarray): The spherical harmonics coefficients.
-    """
-    # Perform the forward transformation
-
     assert mp.shape[0] == 3, (
         "Input map must have I, Q, U components"
     )  # temporary limit, Q and U do nothing
     NSIDE = hp.get_nside(mp[0])
-    lmax = 2 * NSIDE
     upsampled_map, fft_coeff = transform_healpix_to_grid(mp[0])
 
     start = time.time()
@@ -103,72 +91,63 @@ def forward(mp: np.array) -> np.array:
     alm = FSHT(fft_lat_nufft)
     print("FSHT time:", time.time() - start)
 
-    save_to_fits(alm, "alm_array_cg_{0}.fits".format(NSIDE))
+    if save:
+        save_to_fits(alm, "alm_array_cg_{0}.fits".format(NSIDE))
 
     return alm
 
 
-def backward(alm: np.array) -> np.array:
+def backward(alm: np.array, save: bool = False) -> np.array:
+    """Inverse transform: coefficient array -> HEALPix map.
+
+    ``alm``/``C`` is the FastTransforms triangular array of shape (L+1, 2*L+1).
+    With the default compact band the internal band limit is L = lmax = 2*nside,
+    so nside = (rows - 1) // 2. Set ``save=True`` to dump
+    ``mp_array_cg_<nside>.fits``.
     """
-    Perform the inverse transformation from spherical harmonics to HEALPix map.
-
-    Parameters:
-    - alm (numpy.ndarray): The spherical harmonics coefficients.
-
-    Returns:
-    - mp (numpy.ndarray): The HEALPix map data.
-    """
-
-    # alm/C is the FastTransforms triangular array of shape (L+1, 2*L+1). With the
-    # default compact band the internal band limit is L = lmax = 2*nside, so
-    # nside = (rows - 1) // 2. (The legacy square mode used L = 4*nside -> // 4.)
     NSIDE = (alm.shape[0] - 1) // 2
     _, C = inverse_FSHT(alm, NSIDE)
     fft_lat = inverse_nuFFT(C)
     fft_coeff = DFS_inverse(fft_lat)
     mp = transform_grid_to_healpix(fft_coeff, fft_coeff)
 
-    hp.write_map("mp_array_cg_{0}.fits".format(NSIDE), mp, overwrite=True)
-    print("mp_array_cg_{0}.fits saved".format(NSIDE))
+    if save:
+        hp.write_map("mp_array_cg_{0}.fits".format(NSIDE), mp, overwrite=True)
+        print("mp_array_cg_{0}.fits saved".format(NSIDE))
 
     return mp
 
 
-if __name__ == "__main__":
-    from src.data_interpolation import (
-        transform_healpix_to_grid,
-        transform_grid_to_healpix,
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run a HP2SPH forward (+ optional inverse) transform on a "
+        "HEALPix map FITS file."
     )
-    from src.double_fourier_sphere import DFS, DFS_inverse
-    from src.nuFFT import apply_nuFFT, inverse_nuFFT
-    from src.FSHT import FSHT, inverse_FSHT
+    parser.add_argument(
+        "maps",
+        nargs="+",
+        help="HEALPix map FITS file(s) with I, Q, U fields (Q/U are ignored).",
+    )
+    parser.add_argument(
+        "--roundtrip",
+        action="store_true",
+        help="Also run the inverse transform back to a map.",
+    )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Write intermediate alm / map FITS files to the current directory.",
+    )
+    args = parser.parse_args()
 
-    folder = "/Users/basyrov/Documents/APC/generated_data/"
-    filenames = [
-        "sky_map_freq_100_8.fits",
-        "sky_map_freq_100_16.fits",
-        "sky_map_freq_100_32.fits",
-        "sky_map_freq_100_64.fits",
-    ]
-    """
-        'sky_map_freq_100_128.fits',
-        'sky_map_freq_100_256.fits',
-        'sky_map_freq_100_512.fits',
-        'sky_map_freq_100_1024.fits'
-    ]
-    """
-
-    for filename in filenames:
+    for filename in args.maps:
         print(filename, "being processed")
-        mp = hp.read_map(folder + filename, field=(0, 1, 2))
-        alm = forward(mp)
-        backward(alm)
+        mp = hp.read_map(filename, field=(0, 1, 2))
+        alm = forward(mp, save=args.save)
+        if args.roundtrip:
+            backward(alm, save=args.save)
         print()
-else:
-    from .src.data_interpolation import (
-        transform_healpix_to_grid,
-        transform_grid_to_healpix,
-    )
-    from .src.double_fourier_sphere import DFS, DFS_inverse
-    from .src.nuFFT import apply_nuFFT, inverse_nuFFT
-    from .src.FSHT import FSHT, inverse_FSHT
+
+
+if __name__ == "__main__":
+    main()

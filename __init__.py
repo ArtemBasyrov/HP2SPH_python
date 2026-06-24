@@ -6,7 +6,7 @@ from .src.data_interpolation import (
     create_upsampled_grid,
 )
 from .src.double_fourier_sphere import DFS, DFS_inverse
-from .src.FSHT import FSHT
+from .src.FSHT import FSHT, inverse_FSHT
 from .src.nuFFT import apply_nuFFT, inverse_nuFFT
 
 # package version
@@ -15,8 +15,9 @@ __version__ = "0.1.0"
 __author__ = "Artem Basyrov"
 
 # Package documentation
-__doc__ = """" 
-"HP2SPH_python is a Python package for transforming HEALPix maps into spherical harmonics and vice versa.  \
+__doc__ = """\
+HP2SPH_python transforms HEALPix maps into spherical-harmonic coefficients and
+back, reproducing the HP2SPH algorithm of Drake & Wright (arXiv:1904.10514).
 """
 
 __all__ = [

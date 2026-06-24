@@ -1,30 +1,34 @@
-"""In-process FastTransforms sphere transforms (replaces the Julia subprocess).
+"""In-process FastTransforms sphere transforms.
 
 The HP2SPH FSHT stage needs Slevinsky's bivariate Fourier <-> spherical-harmonic
-connection (``fourier2sph`` / ``sph2fourier``). Historically this shelled out to
-Julia's ``FastTransforms.jl`` over a JSON pipe (``src/julia_sph*.jl``); this module
-calls the SAME underlying C library, ``libfasttransforms``, directly via ctypes --
-no subprocess, no JSON serialization, no second runtime.
+connection (``fourier2sph`` / ``sph2fourier``). This module calls the C library
+``libfasttransforms`` directly via ctypes -- no subprocess, no second runtime.
 
-Library resolution (NO hardcoded paths -- nothing tied to a Julia artifact):
+Library resolution. The shared library is a native dependency (it is not on
+PyPI), so it is discovered at import time, in order, from:
 
-* ``FASTTRANSFORMS_LIB`` env var = full path to the shared library, else
-* ``ctypes.util.find_library("fasttransforms")``, else
-* bare names (``libfasttransforms.{dylib,so}``) on the loader path.
+1. ``$FASTTRANSFORMS_LIB`` -- full path to the library (explicit override),
+2. a ``lib/`` directory next to this package or at the repo root (drop or
+   symlink the built ``libfasttransforms.{dylib,so}`` there for a self-contained
+   checkout),
+3. the active conda / virtualenv ``lib`` dir and the OS loader path
+   (``ctypes.util.find_library``) -- where a system / conda-forge install lands,
+4. a prebuilt ``FastTransforms.jl`` artifact under ``~/.julia`` if one happens to
+   be present (just a precompiled binary; no Julia runtime is used).
 
+So no environment variable is required when the library is installed in any of
+the usual places; ``FASTTRANSFORMS_LIB`` remains available only as an override.
 The library AND its dependencies (FFTW, MPFR, OpenBLAS, OpenMP) must be loadable;
-a clean build/package (e.g. built from MikaelSlevinsky/FastTransforms, or a distro
-package) resolves those via its own rpath. If nothing loads, importing this module
-raises ``ImportError`` and ``FSHT.py`` falls back to the Julia subprocess.
+a clean build/package resolves those via its own rpath. If nothing loads,
+importing this module raises ``ImportError`` (the FSHT stage then errors with a
+build/install hint -- see ``README.md`` / ``FSHT.py``).
 
-Numerics are verified bit-for-bit against the legacy Julia path (relerr 0). The
-``np.conj`` below is deliberate: the old ``.jl`` scripts conjugated their input via
-the ``'`` adjoint in ``reduce(vcat, complex_array')``, and the downstream
-conversion (``FSHT.to_healpy_alm`` / ``convert_to_bivar_coeffs``) was calibrated
-against that. ``fourier2sph`` is real-linear (run on the real and imaginary parts
-separately), so ``conj(input) -> conj(output)`` and reproducing the conjugation on
-the output is exactly equivalent. (A future cleanup could drop the conj here and
-re-derive the conversion factors without it.)
+The ``np.conj`` below is deliberate: the downstream conversion
+(``FSHT.to_healpy_alm`` / ``convert_to_bivar_coeffs``) is calibrated against the
+conjugated output. ``fourier2sph`` is real-linear (run on the real and imaginary
+parts separately), so ``conj(input) -> conj(output)`` and reproducing the
+conjugation on the output is exactly equivalent. (A future cleanup could drop the
+conj here and re-derive the conversion factors without it.)
 
 C API used (from libfasttransforms; n = matrix rows = L+1, the coeff layout is
 (n, 2n-1)):
@@ -37,36 +41,74 @@ C API used (from libfasttransforms; n = matrix rows = L+1, the coeff layout is
 
 import ctypes
 import ctypes.util
+import glob
 import os
+import sys
 
 import numpy as np
 
 _TRANS_N = ord("N")  # 'N': no transpose (the only mode we need)
 
+_LIB_NAMES = (
+    "libfasttransforms.dylib",
+    "libfasttransforms.so",
+    "libfasttransforms.2.dylib",
+)
 
-def _load_library():
-    candidates = []
+
+def _candidate_paths():
+    """Yield candidate library paths/names, most specific first (see module docs)."""
+    # 1. explicit override
     env = os.environ.get("FASTTRANSFORMS_LIB")
     if env:
-        candidates.append(env)
+        yield env
+
+    # 2. a lib/ dir shipped with the checkout (next to this package, or repo root)
+    here = os.path.dirname(os.path.abspath(__file__))
+    local_dirs = [os.path.join(here, "lib"), os.path.join(here, os.pardir, "lib")]
+    for d in local_dirs:
+        for name in _LIB_NAMES:
+            yield os.path.join(d, name)
+
+    # 3. active conda / virtualenv lib dir, then the OS loader path
+    prefixes = [
+        sys.prefix,
+        os.environ.get("CONDA_PREFIX"),
+        os.environ.get("VIRTUAL_ENV"),
+    ]
+    for prefix in filter(None, prefixes):
+        for name in _LIB_NAMES:
+            yield os.path.join(prefix, "lib", name)
     found = ctypes.util.find_library("fasttransforms")
     if found:
-        candidates.append(found)
-    candidates += [
-        "libfasttransforms.dylib",
-        "libfasttransforms.so",
-        "libfasttransforms.2.dylib",
-    ]
+        yield found
+
+    # 4. a prebuilt FastTransforms.jl artifact binary, if present (no Julia is run)
+    for name in _LIB_NAMES:
+        yield from sorted(
+            glob.glob(os.path.expanduser(f"~/.julia/artifacts/*/lib/{name}"))
+        )
+
+    # 5. bare names on the default loader path (last resort)
+    yield from _LIB_NAMES
+
+
+def _load_library():
     errors = []
-    for name in candidates:
+    seen = set()
+    for name in _candidate_paths():
+        if name in seen:
+            continue
+        seen.add(name)
         try:
             return ctypes.CDLL(name)
         except OSError as exc:  # not found / unresolved deps
             errors.append(f"  {name}: {exc}")
     raise ImportError(
-        "Could not load libfasttransforms. Set FASTTRANSFORMS_LIB to its full path, "
-        "or install it (with its FFTW/MPFR/OpenBLAS/OpenMP deps) on the loader path.\n"
-        + "\n".join(errors)
+        "Could not load libfasttransforms. Build or install it (with its "
+        "FFTW/MPFR/OpenBLAS/OpenMP deps) -- see README.md -- and put it on the "
+        "loader path, in a lib/ dir next to the package, or point "
+        "FASTTRANSFORMS_LIB at it.\n" + "\n".join(errors)
     )
 
 
@@ -142,7 +184,9 @@ def _apply(symbol, A):
         buf = np.asfortranarray(getattr(A, part), dtype=np.float64)
         fn(_TRANS_N, p, buf.ctypes.data_as(ctypes.c_void_p), n, m)
         setattr(out, part, buf)
-    return np.conj(out)  # match the legacy Julia pipeline contract (see module docs)
+    return np.conj(
+        out
+    )  # downstream conversion is calibrated against conj (module docs)
 
 
 def fourier2sph(g):
@@ -164,9 +208,8 @@ def _apply_spin(symbol, A, spin):
     single Fortran-ordered complex128 buffer whose memory layout already matches
     ft_complex. The plan is keyed by (rows, spin).
 
-    The legacy-pipeline ``np.conj`` contract is NOT applied here: the spin path is
-    new code with no Julia ancestry to match. The downstream spin conversion
-    (Phase 4) is calibrated directly against this output.
+    The scalar ``np.conj`` contract is NOT applied here: the downstream spin
+    conversion (Phase 4) is calibrated directly against this output.
     """
     A = np.asfortranarray(A, dtype=np.complex128)
     n, m = A.shape  # n = L+1 rows; m = 2L+1 = 2n-1 cols

@@ -3,11 +3,11 @@
 Run from the repo root with an env that has the pipeline deps (substitute its
 interpreter for ``python``)::
 
-    KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python -m pytest
+    python -m pytest
 
-The two env vars are also set defensively below (they only take effect if the
-relevant libraries have not been imported yet), and ``-m "not julia"`` skips the
-tests that shell out to Julia / FastTransforms.jl.
+The OpenMP guard and float64 are set below (and by the package itself on import),
+so no env-var prefix is needed; ``-m "not ft"`` skips the tests that need the
+libfasttransforms C library.
 """
 
 import os
@@ -31,7 +31,7 @@ import pytest
 # Parametrisation                                                              #
 # --------------------------------------------------------------------------- #
 # Small nside values keep the suite fast while still exercising the polar /
-# equatorial ring split (needs nside >= 2) and the Julia round trip.
+# equatorial ring split (needs nside >= 2) and the FSHT round trip.
 NSIDES = [4, 8, 16]
 
 

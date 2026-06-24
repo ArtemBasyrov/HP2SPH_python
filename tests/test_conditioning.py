@@ -22,7 +22,7 @@ and are pinned here so they don't silently regress:
    nside=64 -- at the same forward accuracy. This is the ``solver="svd"`` default.
 
 These tests use only numpy/healpy for the conditioning facts (fast, no FSHT), and
-the in-process / Julia FastTransforms backend for the end-to-end invertibility.
+the in-process libfasttransforms backend for the end-to-end invertibility.
 """
 
 import numpy as np
@@ -88,7 +88,7 @@ def _roundtrip(nside, **nufft_kw):
     return np.linalg.norm(rec - mp) / np.linalg.norm(mp)
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_square_svd_invertible_at_nside64_where_cg_floors():
     """SQUARE band: dense-SVD reaches ~1e-5 invertibility where CG-on-normal floors.
 
@@ -107,14 +107,14 @@ def test_square_svd_invertible_at_nside64_where_cg_floors():
     assert rt_svd < rt_cg / 100  # SVD is orders of magnitude better
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 @pytest.mark.parametrize("nside", [8, 16])
 def test_square_svd_roundtrip_is_machine_precision(nside):
     """SQUARE band + SVD round trips to ~machine precision in the low-nside range."""
     assert _roundtrip(nside, solver="svd", solve_modes=8 * nside + 1) < 1e-10
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 @pytest.mark.parametrize("nside", [64, 128, 256])
 def test_scalable_default_path_works_at_high_nside(nside):
     """The default well-conditioned band scales past where the square band walls.

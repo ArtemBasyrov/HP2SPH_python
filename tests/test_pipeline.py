@@ -1,10 +1,13 @@
-"""End-to-end pipeline tests (all require Julia / FastTransforms.jl)."""
+"""End-to-end pipeline tests (all require the libfasttransforms C library)."""
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from tests.pipeline_helpers import (
+# The pipeline helpers load the C library on import; skip cleanly if it is missing.
+pytest.importorskip("src.ft_sphere")
+
+from tests.pipeline_helpers import (  # noqa: E402
     forward_C,
     forward_alm,
     backward_map,
@@ -23,7 +26,7 @@ def _sub_band(alm, lmax, cut=1):
     return ls <= lmax - cut
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_forward_backward_map_roundtrip_exact_mode(nside, healpix_map, relerr):
     """SQUARE-interpolation mode round-trips the map to near machine precision.
 
@@ -38,7 +41,7 @@ def test_forward_backward_map_roundtrip_exact_mode(nside, healpix_map, relerr):
     assert relerr(recovered, healpix_map) < 1e-5
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_forward_backward_map_roundtrip_default(nside, healpix_map, relerr):
     """The default (well-conditioned, scalable) path round-trips to a few percent.
 
@@ -53,7 +56,7 @@ def test_forward_backward_map_roundtrip_default(nside, healpix_map, relerr):
     assert relerr(recovered, healpix_map) < 1.5e-1
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_forward_alm_matches_input(nside, lmax, healpix_map, random_alm, relerr):
     """Forward alm must recover the alm that synthesised the map (below Nyquist).
 
@@ -77,7 +80,7 @@ def test_forward_alm_matches_input(nside, lmax, healpix_map, random_alm, relerr)
     assert err < 3.5e-2, f"forward alm rel error {err:.4f} (nside={nside}, l<=lmax-1)"
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_forward_alm_matches_healpy(nside, lmax, healpix_map, relerr):
     """Forward alm must agree with hp.map2alm below the Nyquist band.
 
@@ -93,7 +96,7 @@ def test_forward_alm_matches_healpy(nside, lmax, healpix_map, relerr):
     assert err < 3.5e-2, f"forward alm vs map2alm rel error {err:.4f} (nside={nside})"
 
 
-@pytest.mark.julia
+@pytest.mark.ft
 def test_forward_alm_converges_with_nside(relerr):
     """Sub-band forward error must shrink as nside grows (genuine convergence).
 

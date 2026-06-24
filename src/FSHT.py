@@ -1,19 +1,12 @@
 import numpy as np
 import jax.numpy as jnp
-import subprocess
-import json
 
-# Prefer the in-process libfasttransforms backend (no Julia subprocess / JSON).
-# Falls back to the Julia scripts below if the C library can't be loaded, so the
-# pipeline keeps working until a clean libfasttransforms is installed (see
-# src/ft_sphere.py for library resolution via the FASTTRANSFORMS_LIB env var).
-try:
-    from .ft_sphere import fourier2sph as _ft_fourier2sph
-    from .ft_sphere import sph2fourier as _ft_sph2fourier
-
-    _HAVE_FT = True
-except ImportError:
-    _HAVE_FT = False
+# The FSHT stage runs in-process through the libfasttransforms C library (see
+# src/ft_sphere.py for how the library is located -- no env var needed when it is
+# installed normally). If it cannot be loaded, the import below raises ImportError
+# with a build/install hint; there is no other backend.
+from .ft_sphere import fourier2sph as _ft_fourier2sph
+from .ft_sphere import sph2fourier as _ft_sph2fourier
 
 
 def preparation(bivar_coeffs: jnp.array) -> jnp.array:
@@ -87,34 +80,9 @@ def preparation(bivar_coeffs: jnp.array) -> jnp.array:
     return g
 
 
-def call_Julia(g: jnp.array, scriptname: str) -> jnp.array:
-    json_data = json.dumps({"real": g.real.tolist(), "imag": g.imag.tolist()})
-
-    result = subprocess.run(
-        ["julia", scriptname],
-        input=json_data,  # Pass JSON as input
-        text=True,
-        capture_output=True,
-    )
-
-    def complex_decoder(obj):
-        if "__complex__" in obj:
-            return complex(obj["real"], obj["imag"])
-        return obj
-
-    output_array = json.loads(result.stdout, object_hook=complex_decoder)
-    return output_array
-
-
 def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
     g = preparation(bivar_coeffs)
-
-    if _HAVE_FT:
-        C = _ft_fourier2sph(g)
-    else:
-        C = np.array(call_Julia(g, scriptname="src/julia_sph.jl"))
-
-    return C
+    return _ft_fourier2sph(g)
 
 
 SCALE_2PI = 1.0 / (2.0 * np.pi)  # first-principles global gain (see to_healpy_alm)
@@ -236,11 +204,6 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
 
 
 def inverse_FSHT(alm: jnp.array, nside: int) -> jnp.array:
-    if _HAVE_FT:
-        bivar_coeffs = _ft_sph2fourier(np.asarray(alm))
-    else:
-        bivar_coeffs = np.array(call_Julia(alm, scriptname="src/julia_sph_inverse.jl"))
-
+    bivar_coeffs = _ft_sph2fourier(np.asarray(alm))
     C = convert_to_bivar_coeffs(bivar_coeffs, nside)
-
     return bivar_coeffs, C

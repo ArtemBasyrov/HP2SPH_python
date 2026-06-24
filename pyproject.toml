@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hp2sph"
+version = "0.1.0"
+description = "Fast HEALPix map <-> spherical-harmonic (alm) transforms (HP2SPH; Drake & Wright, arXiv:1904.10514)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Artem Basyrov" }]
+keywords = ["healpix", "spherical-harmonics", "cmb", "astrophysics", "fft"]
+
+# Pure-Python dependencies (installable from PyPI). The FSHT stage additionally
+# needs the native libfasttransforms C library, which is NOT on PyPI -- see
+# README.md for how to build/install it. It is discovered automatically at
+# runtime, so no environment variable is required.
+dependencies = [
+    "numpy",
+    "scipy",
+    "astropy",
+    "healpy",
+    "jax",
+    "jax_healpy",
+    "finufft",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+hp2sph = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+packages = ["src"]
