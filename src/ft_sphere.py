@@ -85,7 +85,27 @@ for _name in ("ft_execute_sph2fourier", "ft_execute_fourier2sph"):
     ]
 _lib.ft_destroy_harmonic_plan.argtypes = [ctypes.c_void_p]
 
+# Spin-weighted plan + executes. Unlike the scalar routines (real double*, run on
+# the real and imaginary parts separately), the spin routines take a genuinely
+# complex interleaved array (ft_complex = double[2]) and an integer spin s.
+_HAVE_SPIN = hasattr(_lib, "ft_plan_spinsph2fourier")
+if _HAVE_SPIN:
+    _lib.ft_plan_spinsph2fourier.restype = ctypes.c_void_p
+    _lib.ft_plan_spinsph2fourier.argtypes = [ctypes.c_int, ctypes.c_int]
+    for _name in ("ft_execute_spinsph2fourier", "ft_execute_fourier2spinsph"):
+        _fn = getattr(_lib, _name)
+        _fn.restype = None
+        _fn.argtypes = [
+            ctypes.c_int,  # TRANS
+            ctypes.c_void_p,  # plan
+            ctypes.c_void_p,  # A (in place, column-major, interleaved complex)
+            ctypes.c_int,  # N = rows
+            ctypes.c_int,  # M = cols
+        ]
+    _lib.ft_destroy_spin_harmonic_plan.argtypes = [ctypes.c_void_p]
+
 _plans = {}  # n (= L+1 = matrix rows) -> plan pointer; reused across calls/directions
+_spin_plans = {}  # (n, s) -> spin plan pointer; reused across calls/directions
 
 
 def _plan(n):
@@ -93,6 +113,16 @@ def _plan(n):
     if p is None:
         p = _lib.ft_plan_sph2fourier(n)
         _plans[n] = p
+    return p
+
+
+def _spin_plan(n, s):
+    p = _spin_plans.get((n, s))
+    if p is None:
+        if not _HAVE_SPIN:
+            raise RuntimeError("libfasttransforms has no spin-weighted entry points")
+        p = _lib.ft_plan_spinsph2fourier(n, s)
+        _spin_plans[(n, s)] = p
     return p
 
 
@@ -123,3 +153,35 @@ def fourier2sph(g):
 def sph2fourier(C):
     """Spherical-harmonic ``C`` -> bivariate Fourier-Chebyshev ``g`` coefficients."""
     return _apply("ft_execute_sph2fourier", C)
+
+
+def _apply_spin(symbol, A, spin):
+    """Run a spin-weighted sphere-plan execute on a complex (L+1, 2L+1) matrix.
+
+    The spin C routine is in-place, column-major and genuinely complex
+    (ft_complex = double[2], i.e. interleaved re/im), so -- unlike the scalar
+    ``_apply`` which runs on the real and imaginary parts separately -- we pass a
+    single Fortran-ordered complex128 buffer whose memory layout already matches
+    ft_complex. The plan is keyed by (rows, spin).
+
+    The legacy-pipeline ``np.conj`` contract is NOT applied here: the spin path is
+    new code with no Julia ancestry to match. The downstream spin conversion
+    (Phase 4) is calibrated directly against this output.
+    """
+    A = np.asfortranarray(A, dtype=np.complex128)
+    n, m = A.shape  # n = L+1 rows; m = 2L+1 = 2n-1 cols
+    fn = getattr(_lib, symbol)
+    p = _spin_plan(n, spin)
+    out = A.copy(order="F")  # operate in place on a copy
+    fn(_TRANS_N, p, out.ctypes.data_as(ctypes.c_void_p), n, m)
+    return out
+
+
+def fourier2spinsph(g, spin):
+    """Bivariate Fourier ``g`` coefficients -> spin-``spin`` spherical-harmonic ``C``."""
+    return _apply_spin("ft_execute_fourier2spinsph", g, spin)
+
+
+def spinsph2fourier(C, spin):
+    """Spin-``spin`` spherical-harmonic ``C`` -> bivariate Fourier ``g`` coefficients."""
+    return _apply_spin("ft_execute_spinsph2fourier", C, spin)
