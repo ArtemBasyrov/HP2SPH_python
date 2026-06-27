@@ -146,7 +146,32 @@ if _HAVE_SPIN:
         ]
     _lib.ft_destroy_spin_harmonic_plan.argtypes = [ctypes.c_void_p]
 
+# Equiangular FFTW synthesis/analysis on the sphere with spin. These map between
+# function VALUES on the equiangular grid (theta_n = (2n+1)*pi/(2N), phi_m =
+# 2*pi*m/M) and the bivariate Fourier coefficients that fourier2spinsph consumes --
+# the library's own counterpart to HP2SPH's stages 1-3. They are the documented
+# fallback for the spin path (SPIN2_PLAN.md): bypass the hand-rolled DFS by
+# resampling onto this grid. Only bound when the entry points exist.
+_HAVE_SPIN_FFTW = _HAVE_SPIN and hasattr(_lib, "ft_plan_spinsph_analysis")
+_FFTW_ESTIMATE = 1 << 6  # do not clobber the input array while planning
+if _HAVE_SPIN_FFTW:
+    for _name in ("ft_plan_spinsph_analysis", "ft_plan_spinsph_synthesis"):
+        _fn = getattr(_lib, _name)
+        _fn.restype = ctypes.c_void_p
+        _fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    for _name in ("ft_execute_spinsph_analysis", "ft_execute_spinsph_synthesis"):
+        _fn = getattr(_lib, _name)
+        _fn.restype = None
+        _fn.argtypes = [
+            ctypes.c_int,  # TRANS
+            ctypes.c_void_p,  # plan
+            ctypes.c_void_p,  # X (in place, column-major, interleaved complex)
+            ctypes.c_int,  # N
+            ctypes.c_int,  # M
+        ]
+
 _plans = {}  # n (= L+1 = matrix rows) -> plan pointer; reused across calls/directions
+_fftw_plans = {}  # (kind, N, M, s) -> spinsphere fftw plan pointer
 _spin_plans = {}  # (n, s) -> spin plan pointer; reused across calls/directions
 
 
@@ -228,3 +253,41 @@ def fourier2spinsph(g, spin):
 def spinsph2fourier(C, spin):
     """Spin-``spin`` spherical-harmonic ``C`` -> bivariate Fourier ``g`` coefficients."""
     return _apply_spin("ft_execute_spinsph2fourier", C, spin)
+
+
+def _fftw_plan(kind, N, M, spin):
+    key = (kind, N, M, spin)
+    p = _fftw_plans.get(key)
+    if p is None:
+        if not _HAVE_SPIN_FFTW:
+            raise RuntimeError("libfasttransforms has no spinsph FFTW entry points")
+        p = getattr(_lib, f"ft_plan_spinsph_{kind}")(N, M, spin, _FFTW_ESTIMATE)
+        _fftw_plans[key] = p
+    return p
+
+
+def _spinsph_fftw(kind, values_NM, spin):
+    """Run the in-place spinsph FFTW transform on an ``(N, M)`` complex array.
+
+    ``kind`` is ``"analysis"`` (grid values -> bivariate Fourier coefficients) or
+    ``"synthesis"`` (the inverse). The C routine is in place, column-major and
+    interleaved complex; the plan is keyed by ``(kind, N, M, spin)``.
+    """
+    A = np.asfortranarray(values_NM, dtype=np.complex128)
+    N, M = A.shape
+    out = A.copy(order="F")
+    p = _fftw_plan(kind, N, M, spin)
+    getattr(_lib, f"ft_execute_spinsph_{kind}")(
+        _TRANS_N, p, out.ctypes.data_as(ctypes.c_void_p), N, M
+    )
+    return out
+
+
+def spinsph_analysis(values, spin):
+    """Equiangular grid VALUES -> bivariate Fourier coefficients (spin ``spin``)."""
+    return _spinsph_fftw("analysis", values, spin)
+
+
+def spinsph_synthesis(coeffs, spin):
+    """Bivariate Fourier coefficients -> equiangular grid VALUES (spin ``spin``)."""
+    return _spinsph_fftw("synthesis", coeffs, spin)

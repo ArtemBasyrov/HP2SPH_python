@@ -9,7 +9,7 @@ from .ft_sphere import fourier2sph as _ft_fourier2sph
 from .ft_sphere import sph2fourier as _ft_sph2fourier
 
 
-def preparation(bivar_coeffs: jnp.array) -> jnp.array:
+def preparation(bivar_coeffs: jnp.array, spin: int = 0) -> jnp.array:
     # bivar_coeffs: (2*L+1 latitude modes [centered], 4*NSIDE longitude [natural
     # centered order m = -2*NSIDE .. 2*NSIDE-1]). The internal latitude band
     # limit L is set by the number of latitude modes the nuFFT solved for, which
@@ -49,8 +49,13 @@ def preparation(bivar_coeffs: jnp.array) -> jnp.array:
     X_neg_ell = X_sort[:L]  # negative ell = [-L, ..., -2, -1]
     X_neg_ell = np.flip(X_neg_ell, axis=0)  # [-1, -2, ..., -L]
 
-    # create sel for odd and even k
-    sel_even = indx[1:] % 2 == 0
+    # create sel for odd and even longitude modes. The bivariate Fourier basis is
+    # cos(l*theta) when (m + spin) is even and sin((l+1)*theta) when (m + spin) is
+    # odd (FastTransforms spinsph2fourier convention; the scalar spin=0 case is the
+    # plain "m even -> cosine, m odd -> sine"). For spin = +-2 this parity is the
+    # same columns as scalar, but writing it as (m + spin) keeps it correct for any
+    # spin and documents the dependence.
+    sel_even = (indx[1:] + spin) % 2 == 0
     sel_odd = ~sel_even
 
     # first row j = 0 (the Chebyshev T_0 / latitude-DC term). For an even
@@ -145,7 +150,7 @@ def to_healpy_alm(
     return alm
 
 
-def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
+def convert_to_bivar_coeffs(g: jnp.array, nside: int, spin: int = 0) -> jnp.array:
     # converting 2D array of g coefficients of Fourier-Chebyshev series
     # into 2D array of bivariate Fourier coefficients.
     #
@@ -169,7 +174,9 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int) -> jnp.array:
     # m != 0, columns of g are ordered [0, -1, 1, -2, 2, ...]
     g_m_neg = g[:, 1::2]  # [-1, -2, -3, ..., -L]
     g_m_pos = g[:, 2::2]  # [ 1,  2,  3, ...,  L]
-    sel_even = np.arange(1, L + 1) % 2 == 0
+    # cos/sin parity per longitude mode m is (m + spin) (see preparation); the
+    # positive-m columns are m = 1..L. For spin = 0 this is the plain m parity.
+    sel_even = (np.arange(1, L + 1) + spin) % 2 == 0
     sel_odd = ~sel_even
 
     # m > 0
@@ -207,3 +214,156 @@ def inverse_FSHT(alm: jnp.array, nside: int) -> jnp.array:
     bivar_coeffs = _ft_sph2fourier(np.asarray(alm))
     C = convert_to_bivar_coeffs(bivar_coeffs, nside)
     return bivar_coeffs, C
+
+
+# --------------------------------------------------------------------------- #
+# Spin-2 (polarization) FSHT                                                   #
+# --------------------------------------------------------------------------- #
+# Global gain mapping a unit spin-weighted coefficient onto the raw F-array cell.
+# Measured (single ``+-2 Y_{l,m}`` probes vs healpy ``map2alm_spin``) to be exactly
+# the scalar ``1/(2*pi)`` -- the spin transform shares the scalar's normalization
+# (see ``spin_alm_from_F`` / tests/test_spin_FSHT.py). Kept as a named constant so
+# the calibration can be re-pinned if the convention is ever re-derived.
+SPIN_SCALE_2PI = SCALE_2PI
+
+
+def FSHT_spin(bivar_coeffs: jnp.array, spin: int) -> jnp.array:
+    """Bivariate Fourier coefficients -> spin-``spin`` spherical-harmonic ``F`` array.
+
+    Mirrors the scalar ``FSHT`` but routes through ``ft_sphere.fourier2spinsph``;
+    ``preparation`` is told the spin so its cos/sin (``m+spin`` parity) split and
+    the resulting ``g`` array match the FastTransforms spin convention.
+    """
+    from .ft_sphere import fourier2spinsph
+
+    g = preparation(bivar_coeffs, spin=spin)
+    return fourier2spinsph(g, spin)
+
+
+def inverse_FSHT_spin(F: jnp.array, nside: int, spin: int) -> jnp.array:
+    """Spin-``spin`` ``F`` array -> bivariate Fourier coefficients (inverse FSHT)."""
+    from .ft_sphere import spinsph2fourier
+
+    bivar_coeffs = spinsph2fourier(np.asarray(F), spin)
+    C = convert_to_bivar_coeffs(bivar_coeffs, nside, spin=spin)
+    return bivar_coeffs, C
+
+
+def _spin_conv_phase(m: int, spin: int) -> float:
+    """healpy <-> FastTransforms spin-harmonic phase for order ``m``, spin ``spin``.
+
+    The FastTransforms spin-weighted harmonics carry a longitude phase relative to
+    healpy's (the spin analog of the scalar ``(-1)^l`` colatitude phase): a unit
+    healpy ``s_a_{l,m}`` comes back as ``(-1)^m`` times the F-array cell, EXCEPT in
+    the ``s < 0`` interior ``0 <= m < |s|`` (where ``m+s < 0`` flips the Jacobi
+    ``(|m+s|, |m-s|)`` ordering), where the phase is ``+1`` instead. Measured with
+    single ``+-2 Y_{l,m}`` probes against healpy (tests/test_spin_FSHT.py); for the
+    polarization spins ``s = +-2`` this is all the cases that occur.
+    """
+    if spin < 0 and 0 <= m < abs(spin):
+        return 1.0
+    return (-1.0) ** m
+
+
+def _spin_F_col(m: int) -> int:
+    """Column of the FastTransforms spin ``F`` array holding longitude order ``m``.
+
+    The columns are ordered ``m = 0, -1, +1, -2, +2, ...`` (the spinsph2fourier
+    convention): ``m=0`` -> col 0, ``m>0`` -> col ``2m``, ``m<0`` -> col ``2|m|-1``.
+    """
+    if m == 0:
+        return 0
+    return 2 * m if m > 0 else 2 * (-m) - 1
+
+
+def spin_alm_from_F(
+    F: np.array,
+    lmax: int,
+    spin: int,
+    scale: float = SPIN_SCALE_2PI,
+    colat_phase: bool = True,
+    real_sh_norm: bool = True,
+) -> np.array:
+    """Extract the spin-weighted coefficients ``s_a_{l,m}`` (m >= 0) from an ``F`` array.
+
+    ``F`` is the ``(L+1, 2L+1)`` triangular array from ``fourier2spinsph``: cell
+    ``F[l - max(|m|, |spin|), col(m)]`` holds ``s_f_l^m`` (up to the global ``scale``
+    and a ``(-1)^l`` colatitude-origin phase, exactly as the scalar ``to_healpy_alm``).
+    The ``m != 0`` columns additionally carry the ``1/sqrt(2)`` real<->complex
+    spherical-harmonic factor: ``preparation`` reuses the scalar (real-SH) bivariate
+    Fourier normalization, in which every ``|m| > 0`` mode is a factor ``sqrt(2)``
+    larger than the complex-harmonic coefficient -- the same ``sqrt(2)`` the scalar
+    ``to_healpy_alm`` divides out. The returned 1-D array is in healpy ordering for
+    ``m >= 0`` (E and B are real parity fields, so only ``m >= 0`` is stored; the
+    combination into E/B happens in :func:`spin_to_EB`).
+    """
+    F = np.asarray(F)
+    alm = np.zeros(((lmax + 1) * (lmax + 2)) // 2, dtype=complex)
+
+    def idx(l, m):
+        return m * (2 * lmax + 1 - m) // 2 + l  # healpy Alm.getidx
+
+    s0 = abs(spin)
+    sqrt2 = np.sqrt(2.0) if real_sh_norm else 1.0  # library F is already complex-SH
+    for m in range(0, lmax + 1):
+        col = _spin_F_col(m)
+        norm = scale if m == 0 else scale * sqrt2
+        phase_m = _spin_conv_phase(m, spin)  # healpy<->FT spin longitude phase
+        for l in range(max(m, s0), lmax + 1):
+            row = l - max(m, s0)
+            # ``(-1)^l`` undoes the DFS colatitude-origin phase, exactly as the
+            # scalar ``to_healpy_alm``. The library's half-sample equiangular grid
+            # has no such phase, so callers feeding a raw library ``F`` pass
+            # ``colat_phase=False``.
+            sign = phase_m * ((-1.0) ** l if colat_phase else 1.0)
+            alm[idx(l, m)] = sign * F[row, col] / norm
+    return alm
+
+
+def spin_to_EB(
+    F_plus: np.array,
+    F_minus: np.array,
+    lmax: int,
+    scale: float = SPIN_SCALE_2PI,
+    colat_phase: bool = True,
+    real_sh_norm: bool = True,
+):
+    """Combine the spin +2 and spin -2 ``F`` arrays into healpy E/B ``alm``.
+
+    With the spin coefficients
+    ``s_a = spin_alm_from_F(F_s, ...)`` the parity eigenmodes are
+    ``a^E = -(+2a + -2a)/2`` and ``a^B = +i(+2a - -2a)/2`` (the CMB convention; the
+    overall sign/normalization is pinned by ``scale`` and matched to healpy's
+    ``map2alm_spin`` in tests/test_spin_FSHT.py). Returns ``(almE, almB)``.
+    """
+    a_plus = spin_alm_from_F(
+        F_plus,
+        lmax,
+        spin=2,
+        scale=scale,
+        colat_phase=colat_phase,
+        real_sh_norm=real_sh_norm,
+    )
+    a_minus = spin_alm_from_F(
+        F_minus,
+        lmax,
+        spin=-2,
+        scale=scale,
+        colat_phase=colat_phase,
+        real_sh_norm=real_sh_norm,
+    )
+    almE = -(a_plus + a_minus) / 2.0
+    almB = 1j * (a_plus - a_minus) / 2.0
+    return almE, almB
+
+
+def EB_to_spin_F(almE: np.array, almB: np.array, lmax: int):
+    """Inverse of :func:`spin_to_EB` up to scale: build healpy-ordered spin alm.
+
+    Returns the spin coefficients ``(+2a, -2a)`` as 1-D healpy-ordered arrays
+    (m >= 0): ``+2a = -(a^E + i a^B)``, ``-2a = -(a^E - i a^B)``. The backward
+    pipeline turns these into the ``F`` arrays the inverse spin FSHT consumes.
+    """
+    a_plus = -(almE + 1j * almB)
+    a_minus = -(almE - 1j * almB)
+    return a_plus, a_minus

@@ -103,8 +103,13 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
         # coefficients to DFS/nuFFT/FSHT -- the dominant forward-alm error.
         return coeffs_padded
 
+    # A spin field (Q + iU) is carried as a complex map; an intensity (I) map is
+    # real. Keep complex content when present, but drop the (zero) imaginary part
+    # for a real input so the scalar path stays bit-identical to before.
+    is_complex = np.iscomplexobj(np.asarray(healpix_map))
+
     def inverse_fft(fft_coeffs):
-        return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward").real
+        return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward")
 
     # Diving data into rings
     # start_time0 = time.time()
@@ -149,6 +154,8 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     # Inverse FFT
     # start_time0 = time.time()
     upsampled_data = jax.vmap(inverse_fft)(fft_coeff)
+    if not is_complex:
+        upsampled_data = upsampled_data.real
     # print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
 
     end_time = time.time()
@@ -158,7 +165,7 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
 
 # The inverse transformation
 def transform_grid_to_healpix(
-    grid_data: jnp.array, fft_coeff: jnp.array = None
+    grid_data: jnp.array, fft_coeff: jnp.array = None, real_output: bool = True
 ) -> jnp.array:
     """
     Transform a tensor product latitude-longitude grid into a HEALPix map,
@@ -166,6 +173,9 @@ def transform_grid_to_healpix(
 
     Parameters:
         grid_data (ndarray): HEALPix map data.
+        real_output (bool): take the real part of each ring (the intensity / I
+            path, default). Set False to keep a complex (Q + iU) spin field --
+            the inverse of carrying a complex map through the forward transform.
 
     Returns:
         healpix_map (ndarray): Data mapped to the structured grid.
@@ -182,7 +192,11 @@ def transform_grid_to_healpix(
     ring_sizes[:nside] = 4 * i[:nside]
     ring_sizes[3 * nside :] = 4 * (4 * nside - i[3 * nside :])
 
-    healpix_map = np.empty(12 * nside**2)
+    map_dtype = float if real_output else complex
+    healpix_map = np.empty(12 * nside**2, dtype=map_dtype)
+
+    def _maybe_real(arr):
+        return arr.real if real_output else arr
 
     # Define function for vectorized FFT processing
     def calc_fft(ring_data):
@@ -196,14 +210,16 @@ def transform_grid_to_healpix(
         corrected_coeffs_back[-mid:] = fft_coeff[-mid:]
 
         # numpy (not jax) FFT for the same per-ring-dispatch reason as the forward.
-        fft_coeffs = np.fft.ifft(corrected_coeffs_back, n=num_pts, norm="forward").real
+        fft_coeffs = _maybe_real(
+            np.fft.ifft(corrected_coeffs_back, n=num_pts, norm="forward")
+        )
         # Mirror of the forward change: no num_pts/(4*nside) rescaling. The
         # forward FFT (norm='forward') already carries the 1/num_pts, so the
         # ifft (also norm='forward') inverts it exactly with no extra factor.
         return fft_coeffs
 
     def process_equatorial_ring(fft_coeffs):
-        return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward").real
+        return _maybe_real(jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward"))
 
     if fft_coeff is None:
         fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)

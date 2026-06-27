@@ -12,14 +12,31 @@ from .data_interpolation import create_latitude_array
 POLE_INTERP_NPTS = 6
 
 
-def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
+def _mirror_odd_mask(n_lon: int, spin: int) -> np.ndarray:
+    """Columns (numpy-FFT longitude order) whose mode m has (m+spin) odd.
+
+    The DFS mirrors the map across the pole via the glide reflection
+    theta -> 2*pi - theta, phi -> phi + pi. The phi+pi shift multiplies mode m by
+    e^{i*m*pi} = (-1)^m, and a spin-s field picks up an extra (-1)^s, so the
+    mirrored half is multiplied by (-1)^(m+s): columns with (m+s) odd flip sign.
+    For the scalar field (spin=0) this is exactly "flip every odd wavenumber".
+    Since 4*nside is even, the numpy-order column index j has the same parity as
+    its signed mode m, so the mask is a pure parity test on the column index.
+    """
+    j = np.arange(n_lon)
+    return ((j + spin) % 2) == 1
+
+
+def DFS(mp: jnp.array, fft_coeff: jnp.array, spin: int = 0) -> (jnp.array, jnp.array):
     south_part = jnp.flip(mp)
     double_map = jnp.concatenate((mp, south_part), axis=0)
 
     double_map = interpolate_polar_rings(double_map)
 
     south_part = np.flipud(np.array(fft_coeff))
-    south_part[:, 1::2] *= -1  # flip every odd wave number in the mirrored part by -1
+    # flip the mirrored half by (-1)^(m+spin) (scalar: every odd wavenumber)
+    odd = _mirror_odd_mask(fft_coeff.shape[1], spin)
+    south_part[:, odd] *= -1
 
     # double the fft coefficients
     n_rings = fft_coeff.shape[0]
@@ -42,7 +59,7 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array) -> (jnp.array, jnp.array):
     return double_map, double_fft
 
 
-def DFS_inverse(double_fft: jnp.array) -> jnp.array:
+def DFS_inverse(double_fft: jnp.array, spin: int = 0) -> jnp.array:
     nside = double_fft.shape[1] // 4
     n_rings = 4 * nside - 1
 
@@ -107,8 +124,12 @@ def interpolate_polar_rings(mp: jnp.array) -> jnp.array:
     )
     south_pole_mp = _pole_lagrange_weights(-south_theta, 90.0) @ south_fp
 
-    # Add the polar rings to the map
-    double_map = np.zeros((mp.shape[0] + 2, mp.shape[1]))
+    # Add the polar rings to the map. Keep the dtype of the input so a complex
+    # spin field (Q + iU) is not silently truncated to real. The Lagrange pole
+    # fill is linear in the samples, so it applies unchanged to the complex field;
+    # a spin-|s|>=1 field vanishes at the pole (sin^|m+s|(theta/2) cos^|m-s|(theta/2)),
+    # which the extrapolation of the genuine ring values reproduces (-> ~0).
+    double_map = np.zeros((mp.shape[0] + 2, mp.shape[1]), dtype=mp.dtype)
     double_map[0] = north_pole_mp
     double_map[1 : n_rings + 1] = mp[:n_rings]
     double_map[n_rings + 1] = south_pole_mp
