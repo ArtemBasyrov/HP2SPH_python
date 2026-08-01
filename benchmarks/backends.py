@@ -400,9 +400,9 @@ ALL_BACKENDS = [
         # O(nside^3) and ill-conditioned; the latitude Vandermonde hits 1/eps by
         # nside ~128, so running it higher would report noise as a measurement.
         max_nside=64,
-        # Intensity only: forward_spin fixes its own solver (masked LSMR, which
-        # the rank-deficient spin fit requires) and ignores these nuFFT options,
-        # so a P-channel entry here would silently duplicate plain hp2sph.
+        # Intensity only: forward_spin builds its own latitude operator (the alias
+        # fold, which the spin path requires) and ignores these nuFFT options, so a
+        # P-channel entry here would silently duplicate plain hp2sph.
         channels="I",
     ),
     Healpy(

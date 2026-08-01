@@ -40,9 +40,9 @@ from benchmarks import backends as bk
 import healpy as hp
 
 # Chosen so a full default run lands near half an hour on one core. The
-# polarization ladder stops earlier because the spin forward's masked LSMR solve
-# costs ~4x per nside doubling (measured 0.12 / 0.29 / 1.12 / 4.45 s at nside
-# 8 / 16 / 32 / 64), so nside 256 alone would be ~75 s per call.
+# polarization ladder stops earlier because the spin forward's folded latitude solve
+# costs ~3-4x per nside doubling (measured 0.03 / 0.09 / 0.46 / 1.46 / 5.26 s at nside
+# 8 / 16 / 32 / 64 / 128), so nside 256 alone would be ~20 s per call.
 DEFAULT_NSIDE_I = [8, 16, 32, 64, 128, 256, 512]
 DEFAULT_NSIDE_P = [8, 16, 32, 64, 128]
 

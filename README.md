@@ -90,21 +90,22 @@ Each direction has two routes — `forward_spin(analysis=...)` and `backward_spi
 The single `ℓ = m = lmax` coefficient at `lmax = 2·nside` is the grid's longitude Nyquist and cannot be represented; use `lmax ≤ 2·nside - 1` if it matters.
 `lmax > 2·nside` raises `ValueError`.
 
-The forward models the polar-ring longitude alias explicitly (`forward_spin(alias="fold")`, the default).
+The forward models the polar-ring longitude alias explicitly.
 A HEALPix ring of `npix` pixels measures the whole alias family of a mode, not the mode itself, and for a spin-2 field the modes near `|m| = 2` are O(1) at a pole, so the zero-padding misattributed them.
-`alias="mask"` restores the previous route, which dropped those entries instead.
+An earlier fix dropped those entries instead of modelling them; it was removed once the fold proved better in every regime tested, and the "old" column below is what it measured.
 
-RMS relative `C_ℓ^EE` error over the top band `3·lmax/4 ≤ ℓ ≤ 7·lmax/8`, with `lmax = 2·nside` and a smooth band-limited `(aE, aB)` sky (`slope 1.5`, median of 3 seeds):
+RMS relative `C_ℓ^EE` error over the top quarter of the band, with `lmax = 2·nside` and a smooth band-limited `(aE, aB)` sky (`slope 1.5`, median of 4 seeds), from `benchmarks/results/accuracy_P.json`:
 
-| nside | HP2SPH (fold) | HP2SPH (mask) | healpy ring weights | healpy `map2alm_spin` |
-|---|---|---|---|---|
-| 8 | 1.52e-4 | 5.52e-3 | 2.04e-3 | 8.48e-3 |
-| 16 | 6.05e-5 | 1.06e-3 | 1.85e-3 | 3.85e-3 |
-| 32 | 2.68e-5 | 3.28e-4 | 6.27e-4 | 1.28e-3 |
-| 64 | 9.63e-6 | 1.49e-4 | 2.77e-4 | 1.30e-3 |
-| 128 | 3.56e-6 | 5.55e-5 | 9.68e-5 | 5.68e-4 |
+| nside | HP2SPH | HP2SPH (old, removed) | healpy pixel weights | healpy ring weights | healpy `map2alm_spin` |
+|---|---|---|---|---|---|
+| 8 | 2.31e-4 | 5.42e-3 | – | 2.24e-3 | 1.07e-2 |
+| 16 | 9.08e-5 | 6.15e-3 | – | 2.53e-3 | 4.39e-3 |
+| 32 | 3.37e-5 | 2.18e-3 | 5.71e-4 | 6.97e-4 | 1.66e-3 |
+| 64 | 1.37e-5 | 1.85e-3 | 2.19e-4 | 2.89e-4 | 8.31e-4 |
 
-The fold is also about twice as fast as the mask, because the system is full rank again and plain CG replaces LSMR.
+That makes it the most accurate single-pass polarization analysis in the suite at every nside measured.
+healpy's *iterative* `map2alm` still wins by about 3 orders, because it is a near-exact inverse of `alm2map` by construction rather than a quadrature.
+The fold is also 1.25–2.9× faster than the route it replaced, because the system is full rank again and plain CG replaces LSMR.
 Reproduce with `tests/test_alias_fold.py` and `tests/test_spin_paper_accuracy.py`; the backward accuracy is pinned in `tests/test_spin_backward.py`.
 
 The individual pipeline stages are exposed in the `src` package (`transform_healpix_to_grid`, `DFS`, `apply_nuFFT`, `FSHT`, and their inverses).
@@ -112,7 +113,7 @@ The individual pipeline stages are exposed in the `src` package (`transform_heal
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest    # full suite (231 tests)
+PYTHONPATH=. python -m pytest    # full suite (226 tests)
 python -m pytest -m "not ft"     # skip tests that need libfasttransforms
 ```
 
