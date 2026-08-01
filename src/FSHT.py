@@ -227,17 +227,68 @@ def inverse_FSHT(alm: jnp.array, nside: int) -> jnp.array:
 SPIN_SCALE_2PI = SCALE_2PI
 
 
-def FSHT_spin(bivar_coeffs: jnp.array, spin: int) -> jnp.array:
+def spin_g_to_library(
+    g: np.array, scale: float = SPIN_SCALE_2PI, real_sh_norm: bool = True
+) -> np.array:
+    """Put the pipeline's bivariate array into the FastTransforms convention.
+
+    Measured (``tests/test_spin_dfs.py::test_spin_bivariate_matches_library``): the
+    pipeline ``g`` and the library's own ``spinsph_analysis`` output ``A`` differ by
+
+        g[k, c] = scale * (-1)^k * (sqrt(2) if c > 0 else 1) * A[k, c] ,
+
+    so this undoes all three factors and returns an array in the library's convention.
+
+    The ``(-1)^k`` is the important one. The pipeline's latitude variable is
+    ``x = pi - theta`` (``nuFFT._upsampled_latitudes`` maps latitude +90 to x = pi), so
+    its latitude spectrum is the theta-REFLECTED one, and row ``k`` picks up ``(-1)^k``
+    (``cos(k(pi-theta)) = (-1)^k cos(k theta)``, and likewise for the sine rows).
+
+    That reflection has to be undone HERE, in the bivariate domain, and not after the
+    harmonic transform: under ``theta -> pi - theta`` the spin-weighted harmonics obey
+
+        {}_s Y_lm(pi - theta, phi) = (-1)^(l+m) {}_{-s} Y_lm(theta, phi) ,
+
+    i.e. the reflection FLIPS THE SPIN. So no phase applied to the output coefficients
+    can undo it -- which is what the old ``spin_alm_from_F(colat_phase=True)`` path
+    tried to do, and why every ``m != 0`` gain came out wrong (it acted like analysing
+    at ``-spin``). The scalar transform has no such problem because ``s = 0`` is its own
+    negative, so there the ``(-1)^l`` output phase is a valid shortcut.
+
+    After this conversion the array decodes with the library settings
+    (``scale=1, colat_phase=False, real_sh_norm=False``) -- the decode already validated
+    against healpy in ``tests/test_spin_FSHT.py``.
+    """
+    A = np.array(g, dtype=complex)
+    A *= ((-1.0) ** np.arange(A.shape[0]))[:, None]  # x = pi - theta
+    A /= scale
+    if real_sh_norm:
+        A[:, 1:] /= np.sqrt(2.0)  # preparation's real-SH packing, m != 0 only
+    return A
+
+
+def FSHT_spin(
+    bivar_coeffs: jnp.array,
+    spin: int,
+    scale: float = SPIN_SCALE_2PI,
+    real_sh_norm: bool = True,
+) -> jnp.array:
     """Bivariate Fourier coefficients -> spin-``spin`` spherical-harmonic ``F`` array.
 
     Mirrors the scalar ``FSHT`` but routes through ``ft_sphere.fourier2spinsph``;
     ``preparation`` is told the spin so its cos/sin (``m+spin`` parity) split and
     the resulting ``g`` array match the FastTransforms spin convention.
+
+    The returned ``F`` is in the LIBRARY convention (see ``spin_g_to_library``), so it
+    decodes with ``spin_to_EB(..., scale=1.0, colat_phase=False, real_sh_norm=False)``
+    exactly like a ``spinsph_analysis`` result.
     """
     from .ft_sphere import fourier2spinsph
 
     g = preparation(bivar_coeffs, spin=spin)
-    return fourier2spinsph(g, spin)
+    return fourier2spinsph(
+        spin_g_to_library(g, scale=scale, real_sh_norm=real_sh_norm), spin
+    )
 
 
 def inverse_FSHT_spin(F: jnp.array, nside: int, spin: int) -> jnp.array:

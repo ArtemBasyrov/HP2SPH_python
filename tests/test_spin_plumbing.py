@@ -85,3 +85,106 @@ def test_nuFFT_complex_roundtrip(nside, relerr):
     # the projector must actually act (not the identity) and be idempotent
     assert relerr(proj, s) > 1e-3
     assert relerr(proj2, proj) < 1e-6
+
+
+def test_ring_mode_mask_marks_polar_nyquist(nside):
+    """A ring of npix pixels resolves |m| < npix//2; full-length rings stay valid."""
+    from src.data_interpolation import ring_mode_mask, ring_pixel_counts
+
+    mask = ring_mode_mask(nside)
+    sizes = ring_pixel_counts(nside)
+    n_lon = 4 * nside
+    m = np.abs(np.fft.fftfreq(n_lon) * n_lon)
+
+    assert mask.shape == (4 * nside - 1, n_lon)
+    for r, npix in enumerate(sizes):
+        if npix == n_lon:  # equatorial belt: untouched, every column valid
+            assert mask[r].all()
+        else:
+            np.testing.assert_array_equal(mask[r], m < npix // 2)
+
+    # the innermost ring has 4 pixels, so it resolves only |m| <= 1 -- and |m| = 2 is
+    # exactly the mode a spin-2 field carries at O(1) into the pole
+    assert sizes[0] == 4
+    assert not mask[0][np.abs(np.fft.fftfreq(n_lon) * n_lon) == 2].any()
+
+
+def test_dfs_mode_mask_layout(nside):
+    """The doubled mask lines up with the DFS rows and the nuFFT sample locations."""
+    from src.double_fourier_sphere import dfs_mode_mask
+    from src.nuFFT import _upsampled_latitudes
+
+    mask = dfs_mode_mask(nside)
+    n_rings = 4 * nside - 1
+    assert mask.shape == (2 * n_rings + 2, 4 * nside)
+    assert mask.shape[0] == len(_upsampled_latitudes(nside))
+    # pole rows are extrapolated from a stencil reaching the 4-pixel ring -> |m| <= 1
+    m_nat = np.fft.fftshift(np.fft.fftfreq(4 * nside) * (4 * nside))
+    np.testing.assert_array_equal(mask[0], np.abs(m_nat) < 2)
+    np.testing.assert_array_equal(mask[n_rings + 1], mask[0])
+
+
+def test_masked_nuFFT_matches_unmasked_when_mask_is_all_true(nside):
+    """An all-true mask must reproduce the unmasked solve (no accidental reweighting)."""
+    from src.double_fourier_sphere import DFS
+
+    z = _real_map(nside, 2 * nside, seed=3)
+    up, fc = transform_healpix_to_grid(z)
+    _, dfs = DFS(up, fc)
+    plain = apply_nuFFT(dfs)
+    masked = apply_nuFFT(dfs, sample_mask=np.ones(dfs.shape, dtype=bool))
+    np.testing.assert_allclose(masked, plain, rtol=1e-8, atol=1e-12)
+
+
+def test_lsmr_matches_cg_on_the_unmasked_problem(nside, relerr):
+    """Without a mask the fit is well posed, so LSMR and CG must agree."""
+    from src.double_fourier_sphere import DFS
+
+    z = _real_map(nside, 2 * nside, seed=5)
+    up, fc = transform_healpix_to_grid(z)
+    _, dfs = DFS(up, fc)
+    a = apply_nuFFT(dfs, solver="cg")
+    b = apply_nuFFT(dfs, solver="lsmr", rtol=1e-10)
+    assert relerr(np.asarray(b), np.asarray(a)) < 1e-6
+
+
+@pytest.mark.ft
+def test_masked_spin_result_is_insensitive_to_lsmr_tolerance():
+    """The recovered spin alm must not depend on how hard LSMR is pushed.
+
+    Masking makes the latitude fit rank-deficient, so the trailing singular directions
+    are ~0 and the raw coefficient vector keeps moving in the null space as the
+    tolerance tightens. What has to be stable -- and is -- is the OBSERVABLE: the
+    physical content lives in the well-determined subspace. This is the property CG on
+    the normal equations lacked (its answer changed by 26% at 800 iterations and 78% at
+    3000), and it is why the default ``rtol`` for LSMR is 1e-6 rather than 1e-9.
+    """
+    from src.spin_transform import forward_spin
+    import src.nuFFT as nuFFT_mod
+
+    nside, lmax = 16, 32
+    rng = np.random.default_rng(4)
+    n = hp.Alm.getsize(lmax)
+    aE = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    aB = np.zeros(n, dtype=np.complex128)
+    m0 = np.array([hp.Alm.getidx(lmax, ell, 0) for ell in range(lmax + 1)])
+    aE[m0] = aE[m0].real
+    Q, U = hp.alm2map_spin([aE.astype(np.complex128), aB], nside, 2, lmax)
+
+    orig = nuFFT_mod.apply_nuFFT
+    out = {}
+    for rtol in (1e-4, 1e-6, 1e-8):
+        nuFFT_mod.apply_nuFFT = lambda mp, _r=rtol, **kw: orig(mp, **{**kw, "rtol": _r})
+        import src.spin_transform as ST
+
+        ST.apply_nuFFT = nuFFT_mod.apply_nuFFT
+        try:
+            out[rtol] = forward_spin(Q, U, lmax, analysis="hp2sph")[0]
+        finally:
+            nuFFT_mod.apply_nuFFT = orig
+            ST.apply_nuFFT = orig
+
+    ref = out[1e-6]
+    for rtol, got in out.items():
+        rel = np.linalg.norm(got - ref) / np.linalg.norm(ref)
+        assert rel < 1e-2, f"rtol={rtol:g} moved the alm by {rel:.2e}"

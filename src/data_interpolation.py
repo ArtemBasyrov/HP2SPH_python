@@ -19,16 +19,67 @@ def get_ring_indices(nside: int) -> jnp.array:
     """
     num_rings = 4 * nside - 1
     i = np.arange(1, num_rings + 1)
-
-    # find the ring sizes
-    ring_sizes = np.full(num_rings, 4 * nside)
-    ring_sizes[:nside] = 4 * i[:nside]
-    ring_sizes[3 * nside :] = 4 * (4 * nside - i[3 * nside :])
+    ring_sizes = ring_pixel_counts(nside)
 
     # find the start and end indices
     start_indices = jnp.cumsum(ring_sizes) - ring_sizes
     end_indices = start_indices + ring_sizes - 1
     return jnp.vstack((start_indices, end_indices, i)).T
+
+
+def ring_pixel_counts(nside: int) -> np.array:
+    """Number of HEALPix pixels in each RING-ordered ring (north -> south)."""
+    n_rings = 4 * nside - 1
+    i = np.arange(1, n_rings + 1)
+    sizes = np.full(n_rings, 4 * nside)
+    sizes[:nside] = 4 * i[:nside]
+    sizes[3 * nside :] = 4 * (4 * nside - i[3 * nside :])
+    return sizes
+
+
+def ring_mode_mask(nside: int) -> np.array:
+    """Which longitude modes each ring actually RESOLVES, in numpy FFT order.
+
+    A ring of ``npix`` pixels determines only the modes ``|m| < npix//2``. The bin at
+    ``|m| = npix//2`` is the ring's Nyquist: ``+m`` and ``-m`` are the same sampled
+    mode there, so the ring constrains only their sum, and everything above it is not
+    sampled at all. ``process_polar_ring`` writes that whole Nyquist bin into the
+    ``-npix//2`` slot and leaves ``+npix//2`` zero, which asserts two things the data
+    does not support.
+
+    Dropping every unresolved entry leaves the high-``|m|`` columns with samples only in
+    the equatorial belt, so the latitude least squares becomes RANK-DEFICIENT. That is
+    fine, but it must then be solved for the MINIMUM-NORM solution: use
+    ``apply_nuFFT(solver="lsmr", sample_mask=...)``. Plain CG on the normal equations
+    does not converge there -- it drifts into the null space, so the answer changes with
+    ``maxiter`` (measured: 26% at 800 iterations, 78% at 3000). Narrowing the mask to
+    the Nyquist pair alone keeps CG well posed but is ~20x less accurate for spin
+    (6.3e-4 vs 3.2e-5 median C_l error at nside 64), because the false zeros above the
+    Nyquist are what actually corrupts the ``|m| = |s|`` column.
+
+    For a SCALAR field this is harmless: every mode with ``m != 0`` dies like
+    ``theta^|m|`` toward the pole, so the mis-assigned coefficients are ~0 anyway. For a
+    SPIN-s field it is not: the mode ``m = -s`` is O(1) at the north pole and ``m = +s``
+    is O(1) at the south pole (``f_m ~ sin^|m+s|(theta/2) cos^|m-s|(theta/2)``), and
+    ``|m| = |s|`` is exactly the Nyquist of the innermost 4|s|/2-pixel ring. At spin 2
+    that is the 4-pixel ring at each pole, and its O(1) content was being written into
+    the wrong slot -- the whole "m != 0 is broken" symptom (SPIN2_PLAN.md Phase 3).
+
+    Use the mask to drop those entries from the latitude fit as MISSING data (see
+    ``nuFFT.apply_nuFFT(sample_mask=...)``). Zeroing them instead does not work: zero is
+    a false assertion about the field, not an absence of information.
+
+    Full-length rings (the ``4*nside``-pixel equatorial belt) are left fully valid,
+    including the grid's own Nyquist column ``m = -2*nside``: that ambiguity is inherent
+    to the output grid rather than to the ring, and ``FSHT.preparation`` already resolves
+    it by splitting the column symmetrically across ``+-2*nside``. Only rings COARSER
+    than the grid are masked, so the equatorial belt behaves exactly as before.
+    """
+    sizes = ring_pixel_counts(nside)
+    n_lon = 4 * nside
+    m = np.abs(np.fft.fftfreq(n_lon) * n_lon)
+    resolved = m[None, :] < (sizes // 2)[:, None]
+    return resolved | (sizes == n_lon)[:, None]
 
 
 def ring_first_longitude(nside: int) -> np.array:
@@ -186,11 +237,7 @@ def transform_grid_to_healpix(
     n_rings = 4 * nside - 1
     ring_info = get_ring_indices(nside)  # [start_id, end_id, ring_id]
 
-    # find the ring sizes
-    i = np.arange(1, n_rings + 1)
-    ring_sizes = np.full(n_rings, 4 * nside)
-    ring_sizes[:nside] = 4 * i[:nside]
-    ring_sizes[3 * nside :] = 4 * (4 * nside - i[3 * nside :])
+    ring_sizes = ring_pixel_counts(nside)
 
     map_dtype = float if real_output else complex
     healpix_map = np.empty(12 * nside**2, dtype=map_dtype)

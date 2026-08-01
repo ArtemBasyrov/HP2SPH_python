@@ -40,7 +40,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import finufft
-from scipy.sparse.linalg import cg, LinearOperator
+from scipy.sparse.linalg import cg, lsmr, LinearOperator
 
 from .data_interpolation import create_latitude_array
 
@@ -152,7 +152,82 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
     return f_hat, 0
 
 
-def cg_nufft_forward(x, f_samples, N_modes=None, rtol=1e-9, maxiter=200, eps=1e-12):
+def lsmr_nufft_forward(
+    x, f_samples, N_modes=None, sample_mask=None, rtol=1e-9, maxiter=None, eps=1e-12
+):
+    """Latitude analysis via LSMR on the least-squares problem itself.
+
+    Solves ``min || sqrt(W) (A f_hat - samples) ||`` directly, rather than forming the
+    normal equations. Two reasons this is the solver to use with a ``sample_mask``:
+
+    * With entries masked out, the high-``|m|`` columns keep samples only in the
+      equatorial belt and the problem becomes RANK-DEFICIENT. Started from zero, LSMR
+      converges to the MINIMUM-NORM least-squares solution, which is exactly the right
+      answer for "this mode was never sampled here" -- do not invent content in the
+      null space. CG on the normal equations has no such property and drifts into the
+      null space instead.
+    * LSMR works with ``cond(A)``, not ``cond(A)^2``.
+
+    Cost per iteration is one forward + one adjoint NUFFT, the same as a CG iteration.
+    Returns ``(f_hat of shape (N_modes, n_trans), info)`` like ``cg_nufft_forward``.
+    """
+    n_trans = f_samples.shape[0]
+    M_samples = f_samples.shape[1]
+    if N_modes is None:
+        N_modes = _default_N_modes(M_samples)
+
+    plan_forward = finufft.Plan(
+        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128, eps=eps
+    )
+    plan_adjoint = finufft.Plan(
+        1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128, eps=eps
+    )
+    plan_forward.setpts(x)
+    plan_adjoint.setpts(x)
+
+    weights = np.abs(compute_voronoi_weights_1d(x))
+    sw = np.sqrt(weights)[None, :]  # (1, M_samples), broadcasts over columns
+    if sample_mask is not None:
+        mask = np.asarray(sample_mask, dtype=float)
+        if mask.shape == (M_samples, n_trans):
+            mask = mask.T
+        if mask.shape != (n_trans, M_samples):
+            raise ValueError(
+                f"sample_mask must be ({n_trans}, {M_samples}) or its transpose, "
+                f"got {np.shape(sample_mask)}"
+            )
+        sw = sw * np.sqrt(mask)  # zero rows drop out of the least squares entirely
+
+    def matvec(f_hat_vec):
+        out = np.zeros((n_trans, M_samples), dtype=np.complex128)
+        plan_forward.execute(
+            np.ascontiguousarray(f_hat_vec.reshape(n_trans, N_modes)), out
+        )
+        return (sw * out).ravel()
+
+    def rmatvec(res_vec):
+        out = np.zeros((n_trans, N_modes), dtype=np.complex128)
+        plan_adjoint.execute(
+            np.ascontiguousarray(sw * res_vec.reshape(n_trans, M_samples)), out
+        )
+        return out.ravel()
+
+    B = LinearOperator(
+        shape=(n_trans * M_samples, n_trans * N_modes),
+        matvec=matvec,
+        rmatvec=rmatvec,
+        dtype=np.complex128,
+    )
+    b = (sw * np.asarray(f_samples)).ravel()
+    result = lsmr(B, b, atol=rtol, btol=rtol, maxiter=maxiter)
+    f_hat, istop = result[0], result[1]
+    # istop 1/2 = converged to a solution / least-squares solution; 7 = hit maxiter
+    return f_hat.reshape(n_trans, N_modes).T, (0 if istop in (1, 2) else int(istop))
+
+
+def cg_nufft_forward(
+    x, f_samples, N_modes=None, rtol=1e-9, maxiter=200, eps=1e-12, sample_mask=None
+):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
     M_samples = f_samples.shape[1]  # = 8*nside (number of latitude samples)
@@ -171,9 +246,28 @@ def cg_nufft_forward(x, f_samples, N_modes=None, rtol=1e-9, maxiter=200, eps=1e-
     plan_forward.setpts(x)
     plan_adjoint.setpts(x)
 
-    # Calculate Voronoi weights
+    # Calculate Voronoi weights. With a ``sample_mask`` the weights become per-column:
+    # a (ring, mode) entry the ring never resolved gets weight 0, so it drops out of the
+    # least squares as MISSING rather than being asserted to be zero (see
+    # ``data_interpolation.ring_mode_mask``). The blocks stay independent and each
+    # A^H W A is still Hermitian positive semi-definite, so batched CG is unaffected;
+    # only the elementwise weighting below changes shape from (M,) to (n_trans, M).
     weights = compute_voronoi_weights_1d(x)
-    norm = np.sum(weights)  # M_samples if weights = 1
+    if sample_mask is None:
+        norm = np.sum(weights)  # M_samples if weights = 1
+    else:
+        mask = np.asarray(sample_mask, dtype=float)
+        if mask.shape == (M_samples, n_trans):
+            mask = mask.T
+        if mask.shape != (n_trans, M_samples):
+            raise ValueError(
+                f"sample_mask must be ({n_trans}, {M_samples}) or its transpose, "
+                f"got {np.shape(sample_mask)}"
+            )
+        weights = weights[None, :] * mask
+        norm = weights.sum(axis=1, keepdims=True)
+        if np.any(norm == 0):
+            raise ValueError("sample_mask leaves a longitude mode with no samples")
 
     # Reshape helpers
     def vec_to_mat_hat(vec):
@@ -304,10 +398,11 @@ def apply_nuFFT(
     solver: str = "cg",
     N_modes=None,
     solve_modes=None,
-    rtol: float = 1e-9,
+    rtol: float = None,
     maxiter: int = 200,
     eps: float = 1e-12,
     rcond: float = 1e-13,
+    sample_mask=None,
 ) -> jnp.array:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
@@ -336,6 +431,13 @@ def apply_nuFFT(
       Vandermonde. O(nside^3) one-off factorisation; needed only for the
       ill-conditioned square band, where it reaches ~1e-6 round trip up to nside 64.
 
+    ``sample_mask`` (optional, ``cg`` only) marks which (latitude sample, longitude
+    mode) entries the HEALPix grid actually resolved -- see
+    ``double_fourier_sphere.dfs_mode_mask``. Masked entries get zero weight, so they are
+    treated as MISSING instead of zero. This matters only where a mode carries real
+    amplitude on a ring too coarse to sample it, i.e. ``|m| = |spin|`` on the innermost
+    polar rings of a SPIN field; the scalar path is unaffected and defaults to ``None``.
+
     ``N_modes`` is the latitude band handed to the FSHT (-> L = (N_modes-1)//2).
     It defaults to ``solve_modes``, i.e. the FSHT runs at the natural band L = lmax =
     2*nside (the compact `(L+1, 2L+1)` g-array). The FastTransforms ``fourier2sph`` is
@@ -346,6 +448,12 @@ def apply_nuFFT(
     SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT.
     """
     nside = mp.shape[1] // 4
+    if rtol is None:
+        # LSMR is used on the rank-deficient MASKED problem, where the trailing
+        # singular values are ~0: tightening past ~1e-6 only grinds on null-space
+        # directions. Measured at nside 32, spin 2, full mask: rtol 1e-9 -> 21.7 s,
+        # 1e-6 -> ~1 s, with the median C_l error flat at ~1.4e-4 across the range.
+        rtol = 1e-6 if solver == "lsmr" else 1e-9
     if solve_modes is None:
         solve_modes = 4 * nside + 1  # well-conditioned latitude band (|k| <= 2*nside)
     if N_modes is None:
@@ -354,9 +462,26 @@ def apply_nuFFT(
     DFT_upsampled_lat = _upsampled_latitudes(nside)
 
     if solver == "svd":
+        if sample_mask is not None:
+            raise NotImplementedError(
+                "sample_mask needs a per-column solve; the SVD path shares one cached "
+                "Vandermonde factorization across all longitude columns. Use solver='cg'."
+            )
         fft_lat, info = svd_nufft_forward(
             DFT_upsampled_lat, np.asarray(mp.T), N_modes=solve_modes, rcond=rcond
         )
+    elif solver == "lsmr":
+        fft_lat, info = lsmr_nufft_forward(
+            DFT_upsampled_lat,
+            np.asarray(mp.T).copy(),
+            N_modes=solve_modes,
+            sample_mask=sample_mask,
+            rtol=rtol,
+            maxiter=maxiter if maxiter != 200 else None,
+            eps=eps,
+        )
+        if info != 0:
+            print(f"LSMR did not converge (istop={info})!")
     elif solver == "cg":
         fft_lat, info = cg_nufft_forward(
             DFT_upsampled_lat,
@@ -365,11 +490,12 @@ def apply_nuFFT(
             rtol=rtol,
             maxiter=maxiter,
             eps=eps,
+            sample_mask=sample_mask,
         )
         if info != 0:
             print("CG solver didn't converge!")
     else:
-        raise ValueError(f"unknown solver {solver!r}; use 'svd' or 'cg'")
+        raise ValueError(f"unknown solver {solver!r}; use 'svd', 'cg' or 'lsmr'")
 
     if solve_modes < N_modes:
         fft_lat = _embed_centered(fft_lat, N_modes)

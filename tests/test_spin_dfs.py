@@ -54,6 +54,50 @@ def test_spin_dfs_keeps_complex(nside, spin):
     assert np.any(np.abs(np.asarray(double_map)[0]) > 0)
 
 
+def test_mirror_map_is_a_phi_shift(nside):
+    """The DFS glide reflection shifts phi by pi; it does not reverse it.
+
+    ``theta -> 2*pi - theta`` pairs with ``phi -> phi + pi``, which on the grid is a
+    ROLL by half the longitude samples. The old code used ``jnp.flip(mp)`` with no
+    axis, reversing both axes and so applying ``phi -> -phi``.
+    """
+    from src.double_fourier_sphere import _mirror_map
+
+    z = _complex_field(nside, seed=11)
+    up, _ = transform_healpix_to_grid(z)
+    up = np.asarray(up)
+    n_lon = up.shape[1]
+    got = np.asarray(_mirror_map(up, 0))
+    want = np.roll(np.flip(up, axis=0), n_lon // 2, axis=1)
+    np.testing.assert_allclose(got, want, atol=1e-14)
+    # odd spin additionally flips the sign; even spin does not
+    np.testing.assert_allclose(np.asarray(_mirror_map(up, 1)), -want, atol=1e-14)
+
+
+def test_dfs_south_pole_row_is_the_pole(nside):
+    """The south-pole row of double_fft is the FILLED pole, not the last ring.
+
+    ``interpolate_polar_rings`` returns [north pole, rings, south pole, mirror], so the
+    south pole is row ``n_rings+1``. ``DFS`` read row ``n_rings`` -- the last original
+    ring -- so the south pole never got the polynomial fill the north pole did.
+    """
+    z = _complex_field(nside, seed=13)
+    up, fft_coeff = transform_healpix_to_grid(z)
+    double_map, double_fft = DFS(up, fft_coeff, spin=0)
+    n_rings = fft_coeff.shape[0]
+    n_lon = fft_coeff.shape[1]
+
+    pole_row = np.fft.fftshift(
+        np.fft.fft(np.asarray(double_map)[n_rings + 1], n=n_lon, norm="forward")
+    )
+    np.testing.assert_allclose(double_fft[n_rings + 1], pole_row, atol=1e-14)
+    # and it is genuinely different from the last original ring
+    last_ring = np.fft.fftshift(
+        np.fft.fft(np.asarray(double_map)[n_rings], n=n_lon, norm="forward")
+    )
+    assert not np.allclose(double_fft[n_rings + 1], last_ring, atol=1e-10)
+
+
 def test_mirror_mask_matches_scalar_for_even_spin(nside):
     """For even spin the (m+spin)-odd mask is the scalar 'odd wavenumber' columns."""
     n_lon = 4 * nside

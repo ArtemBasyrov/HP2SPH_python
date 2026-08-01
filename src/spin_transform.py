@@ -3,23 +3,32 @@
 This wires the spin stages into an end-to-end ``forward_spin`` / ``backward_spin``
 and follows SPIN2_PLAN.md. Two analysis routes exist:
 
-* ``analysis="library"`` (default, the plan's documented fallback): resample the
-  HEALPix ``(Q, U)`` onto the FastTransforms equiangular grid and use the library's
-  own ``spinsph_analysis`` for the grid->bivariate-Fourier step, then
-  ``fourier2spinsph`` + the E/B decode. This is exact in the grid->coefficients
-  step; its accuracy floor is the HEALPix<->equiangular RESAMPLING (bilinear
-  ``hp.get_interp_val``), so it is accurate only when the map is well oversampled
-  (``nside`` well above ``lmax``). The decode (column/row layout, the ``(-1)^m``
-  spin phase, the E/B combination) is verified against healpy in
-  ``tests/test_spin_FSHT.py``.
+* ``analysis="hp2sph"`` (default): the hand-rolled DFS + latitude nuFFT analysis --
+  the true HP2SPH method, no resampling anywhere. Beats healpy ``map2alm_spin`` by
+  4-8x on the median per-l C_l error at every nside tested (8 to 64), and converges
+  with nside (``tests/test_spin_paper_accuracy.py``).
 
-* ``analysis="hp2sph"``: the hand-rolled DFS + latitude nuFFT analysis (the true
-  HP2SPH method, no resampling). It is correct for ``m = 0`` but NOT yet for
-  ``m != 0`` at spin 2: a spin field does not vanish/flatten at the poles
-  (``d^l_{2,-2}(pi) != 0``), so the DFS even-mirror introduces a derivative kink at
-  the pole that spreads a single harmonic across theta-frequencies. Fixing the
-  spin pole boundary condition is the open gating item (SPIN2_PLAN.md, Phase 3).
-  Provided here for development; do not rely on its ``m != 0`` output.
+* ``analysis="library"``: resample the HEALPix ``(Q, U)`` onto the FastTransforms
+  equiangular grid and use the library's own ``spinsph_analysis`` for the
+  grid->bivariate-Fourier step, then ``fourier2spinsph`` + the E/B decode. Exact in
+  the grid->coefficients step, but its accuracy floor is the HEALPix<->equiangular
+  RESAMPLING (bilinear ``hp.get_interp_val``), so it is only accurate when the map is
+  well oversampled (``nside`` well above ``lmax``). Kept as an independent cross-check
+  of the decode, which it validates against healpy in ``tests/test_spin_FSHT.py``.
+
+The ``m != 0`` failure the plan lists as its open gating item is FIXED. It was never
+the pole boundary condition the plan hypothesized (a spin field's latitude profile is
+``sin^|m+s|(theta/2) cos^|m-s|(theta/2) P(cos theta)``, whose DFS mirror extension is
+analytic -- there is no kink). Three separate bugs were responsible:
+
+1. ``data_interpolation.ring_mode_mask`` -- the innermost polar rings have 4, 8, 12
+   pixels and cannot resolve ``|m| = |s|``, which is exactly the mode a spin-s field
+   carries at O(1) INTO the pole. The zero-padding asserted that content was zero.
+2. ``double_fourier_sphere.DFS`` read the last original ring instead of the filled
+   south pole row (an off-by-one), so half the polynomial pole fill was discarded.
+3. ``FSHT.spin_g_to_library`` -- the pipeline's ``x = pi - theta`` reflection has to be
+   undone in the bivariate domain, because the reflection FLIPS THE SPIN and so cannot
+   be undone by a phase on the output coefficients.
 
 Ground truth throughout is healpy ``map2alm_spin`` / ``alm2map_spin`` with spin 2.
 """
@@ -40,7 +49,7 @@ from .FSHT import (
     _spin_conv_phase,
 )
 from .data_interpolation import transform_healpix_to_grid
-from .double_fourier_sphere import DFS
+from .double_fourier_sphere import DFS, dfs_mode_mask
 from .nuFFT import apply_nuFFT
 
 SPIN = 2  # the polarization spin; the pipeline runs the +SPIN and -SPIN passes
@@ -70,20 +79,27 @@ def _spin_F_library(Q, U, theta, phi, spin):
 
 
 def _spin_F_hp2sph(Q, U, spin):
-    """Hand-rolled HP2SPH analysis -> spin-SH ``F`` array (m=0 correct; see module doc)."""
+    """Hand-rolled HP2SPH analysis -> spin-SH ``F`` array (no resampling).
+
+    The latitude fit is masked (``dfs_mode_mask``): the innermost polar rings do not
+    resolve ``|m| = |spin|``, which for a spin field is exactly where the field is O(1)
+    at the pole, so those entries are dropped as missing rather than asserted to be
+    zero. Without the mask the ``|m| = |spin|`` columns are wrong by 15-50%.
+    """
     z = Q + 1j * U if spin > 0 else Q - 1j * U
+    nside = hp.npix2nside(np.asarray(z).shape[0])
     upsampled, fft_coeff = transform_healpix_to_grid(z)
     _, dfs = DFS(upsampled, fft_coeff, spin=spin)
-    fft_lat = apply_nuFFT(dfs)
+    fft_lat = apply_nuFFT(dfs, solver="lsmr", sample_mask=dfs_mode_mask(nside))
     return FSHT_spin(fft_lat, spin)
 
 
-def forward_spin(Q, U, lmax, analysis="library"):
+def forward_spin(Q, U, lmax, analysis="hp2sph"):
     """HEALPix ``(Q, U)`` polarization map -> healpy-ordered ``(aE, aB)``.
 
     ``analysis`` selects the grid->coefficients route (see the module docstring):
-    ``"library"`` (default, resample + exact library analysis) or ``"hp2sph"``
-    (hand-rolled DFS+nuFFT, ``m != 0`` not yet correct).
+    ``"hp2sph"`` (default, the hand-rolled DFS+nuFFT, no resampling) or ``"library"``
+    (resample + the library's exact analysis, resampling-limited).
     """
     Q = np.asarray(Q)
     U = np.asarray(U)
@@ -99,7 +115,11 @@ def forward_spin(Q, U, lmax, analysis="library"):
     elif analysis == "hp2sph":
         Fp = _spin_F_hp2sph(Q, U, +SPIN)
         Fm = _spin_F_hp2sph(Q, U, -SPIN)
-        return spin_to_EB(Fp, Fm, lmax)  # pipeline norms (1/2pi, sqrt(2), (-1)^l)
+        # FSHT_spin already converted the pipeline conventions away (FSHT.
+        # spin_g_to_library), so this is the same decode the library route uses.
+        return spin_to_EB(
+            Fp, Fm, lmax, scale=1.0, colat_phase=False, real_sh_norm=False
+        )
     raise ValueError(f"unknown analysis {analysis!r}; use 'library' or 'hp2sph'")
 
 

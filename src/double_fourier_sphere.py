@@ -2,7 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 import healpy as hp
 
-from .data_interpolation import create_latitude_array
+from .data_interpolation import create_latitude_array, ring_mode_mask
 
 # Number of HEALPix rings on EACH side of a pole used to extrapolate the (unsampled)
 # pole-ring value. Capped at the polar-cap size (nside-1) so the stencil never
@@ -27,8 +27,33 @@ def _mirror_odd_mask(n_lon: int, spin: int) -> np.ndarray:
     return ((j + spin) % 2) == 1
 
 
+def _mirror_map(mp: jnp.array, spin: int) -> jnp.array:
+    """The southern (mirrored) half of the DFS doubling, in MAP space.
+
+    The DFS glide reflection is theta -> 2*pi - theta, phi -> phi + pi, and a spin-s
+    field picks up (-1)^s across the pole, so
+
+        mirror(theta, phi) = (-1)^s * mp(2*pi - theta, phi + pi).
+
+    In grid terms phi + pi is a ROLL by half the longitude samples, not a reversal.
+    The previous code used ``jnp.flip(mp)`` with no axis, which reverses BOTH axes and
+    so applied phi -> -phi. That is wrong for every |m| > 0, but it only ever showed up
+    through the pole fill (the only consumer of this array), where the sole mode with a
+    nonzero pole value is |m| = |s|:
+
+      * scalar (s = 0): that is m = 0, which is invariant under both -phi and phi+pi,
+        so the bug was invisible -- every other mode vanishes at the pole either way;
+      * spin +-2: that is m = -+2, whose pole value is NOT zero, so the reversed
+        longitude injected a wrong pole ring and spread a single harmonic over all l of
+        the same parity. This was the "m != 0 is broken" symptom (SPIN2_PLAN.md Phase 3).
+    """
+    n_lon = mp.shape[1]
+    mirrored = jnp.roll(jnp.flip(mp, axis=0), n_lon // 2, axis=1)
+    return mirrored * ((-1.0) ** spin)
+
+
 def DFS(mp: jnp.array, fft_coeff: jnp.array, spin: int = 0) -> (jnp.array, jnp.array):
-    south_part = jnp.flip(mp)
+    south_part = _mirror_map(mp, spin)
     double_map = jnp.concatenate((mp, south_part), axis=0)
 
     double_map = interpolate_polar_rings(double_map)
@@ -43,8 +68,15 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array, spin: int = 0) -> (jnp.array, jnp.a
     double_fft = np.zeros((2 * n_rings + 2, fft_coeff.shape[1]), dtype=complex)
     double_fft[0] = np.fft.fft(double_map[0], n=fft_coeff.shape[1], norm="forward")
     double_fft[1 : n_rings + 1] = fft_coeff[:]
+    # ``interpolate_polar_rings`` lays the doubled map out as
+    #   [north pole, original rings (n_rings), south pole, mirrored rings],
+    # so the SOUTH pole is row n_rings+1; row n_rings is the last original ring.
+    # This read used ``double_map[n_rings]``, which duplicated that last ring into the
+    # pole slot -- the south pole never received the polynomial pole fill at all (the
+    # north pole did). The fill is worth 5-15x at the band edge, so half of that gain
+    # was being thrown away.
     double_fft[n_rings + 1] = np.fft.fft(
-        double_map[n_rings], n=fft_coeff.shape[1], norm="forward"
+        double_map[n_rings + 1], n=fft_coeff.shape[1], norm="forward"
     )
     double_fft[n_rings + 2 :] = south_part
 
@@ -74,6 +106,29 @@ def DFS_inverse(double_fft: jnp.array, spin: int = 0) -> jnp.array:
     fft_coeff = np.fft.ifftshift(fft_coeff, axes=1)
 
     return fft_coeff
+
+
+def dfs_mode_mask(nside: int) -> np.ndarray:
+    """``ring_mode_mask`` laid out like the ``double_fft`` array ``DFS`` returns.
+
+    Same row layout as ``interpolate_polar_rings``/``_upsampled_latitudes``
+    (``[north pole, rings, south pole, mirrored rings]``) and the same natural
+    (fftshifted) longitude order, so it can be handed straight to
+    ``nuFFT.apply_nuFFT(sample_mask=...)``.
+
+    The two pole rows are extrapolated, not measured, so a pole mode counts as resolved
+    only where EVERY ring in the Lagrange stencil resolved it. The stencil always
+    reaches the innermost (4-pixel) ring, so the poles constrain only ``|m| <= 1``.
+    The mirrored half repeats the northern mask reversed: the glide reflection changes
+    each mode's sign, never which modes the ring sampled.
+    """
+    mask = ring_mode_mask(nside)
+    npts = max(2, min(POLE_INTERP_NPTS, nside - 1))
+    pole = mask[:npts].all(axis=0)
+    doubled = np.concatenate(
+        (pole[None, :], mask, pole[None, :], np.flip(mask, axis=0)), axis=0
+    )
+    return np.fft.fftshift(doubled, axes=1)
 
 
 def _pole_lagrange_weights(nodes: np.ndarray, x0: float) -> np.ndarray:
