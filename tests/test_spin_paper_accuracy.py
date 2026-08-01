@@ -11,8 +11,9 @@ through the spin stages. Two routes are covered:
   tests run oversampled (nside well above lmax) where that floor is small. They are
   pinned to the library route explicitly rather than relying on the default.
 
-``backward_spin`` is still the library synthesis + resampling, so the round-trip test
-uses the library forward on both ends; a native spin backward is the open item.
+``backward_spin`` has both routes too; the round-trip test here keeps the LIBRARY
+route on both ends so it stays a test of that route. The native synthesis
+(``synthesis="hp2sph"``, exact) has its own file, ``tests/test_spin_backward.py``.
 
 See SPIN2_PLAN.md (Phase 5).
 """
@@ -77,23 +78,18 @@ def test_spin_pure_E_stays_E():
 def test_spin_roundtrip():
     """backward_spin(forward_spin(Q,U)) reproduces (Q,U) in the bulk (resample-limited).
 
-    Both directions use the LIBRARY route on purpose. ``backward_spin`` synthesizes on
-    the FastTransforms equiangular grid and bilinearly resamples to HEALPix, so it is
-    resampling-limited; pairing it with the matching library forward keeps the test
-    about the transform rather than about the interpolation.
-
-    This is now the weakest part of the spin pipeline. The ``hp2sph`` forward no longer
-    resamples, so it *sees* the interpolation artifacts ``backward_spin`` injects and
-    the mixed round trip degrades to ~0.6 relative. A native spin backward
-    (inverse FSHT -> inverse nuFFT -> DFS_inverse -> grid_to_healpix, the mirror of the
-    scalar ``main.backward``) is the outstanding spin-2 work item.
+    Both directions use the LIBRARY route on purpose: it synthesizes on the
+    FastTransforms equiangular grid and bilinearly resamples to HEALPix, so it is
+    resampling-limited, and pairing it with the matching library forward keeps the test
+    about the transform rather than about the interpolation. The NATIVE round trip
+    (``hp2sph`` both ways, far more accurate) is in ``tests/test_spin_backward.py``.
     """
     nside, lmax = 128, 16
     aE, aB = _random_EB(lmax, seed=3)
     Q, U = hp.alm2map_spin([aE, aB], nside, 2, lmax)
 
     aE_rec, aB_rec = forward_spin(Q, U, lmax, analysis="library")
-    Q_rt, U_rt = backward_spin(aE_rec, aB_rec, nside, lmax=lmax)
+    Q_rt, U_rt = backward_spin(aE_rec, aB_rec, nside, lmax=lmax, synthesis="library")
 
     # compare back in harmonic space (robust to the pixel resampling of unsampled
     # high-frequency content): C_l^EE of a second forward should match the first

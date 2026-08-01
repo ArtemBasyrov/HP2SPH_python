@@ -79,12 +79,16 @@ aE, aB = forward_spin(Q, U, lmax=2 * nside)        # the true HP2SPH route
 Q_back, U_back = backward_spin(aE, aB, nside)
 ```
 
-`forward_spin` has two analysis routes, selected with `analysis=`:
+Each direction has two routes — `forward_spin(analysis=...)` and `backward_spin(synthesis=...)`:
 
 | route | what it does | when to use it |
 |---|---|---|
 | `"hp2sph"` (default) | the hand-rolled DFS + latitude nuFFT, no resampling | the real method; more accurate than healpy at every nside tested |
-| `"library"` | resample onto the FastTransforms equiangular grid, then its exact `spinsph_analysis` | a resampling-limited cross-check; needs `nside` well above `lmax` |
+| `"library"` | resample onto the FastTransforms equiangular grid, then its exact `spinsph_analysis` / `spinsph_synthesis` | a resampling-limited cross-check; needs `nside` well above `lmax` |
+
+`backward_spin` on the native route is **exact**: it reproduces `hp.alm2map_spin` to ~2e-13 at every nside tested (8 to 64), for any band `lmax ≤ 2·nside - 1`.
+The single `ℓ = m = lmax` coefficient at `lmax = 2·nside` is the grid's longitude Nyquist and cannot be represented; use `lmax ≤ 2·nside - 1` if it matters.
+`lmax > 2·nside` raises `ValueError`.
 
 Measured against healpy `map2alm_spin`, median per-`ℓ` `C_ℓ` error over `2 ≤ ℓ ≤ lmax-2`, with `lmax = 2·nside` and a random `(aE, aB)` sky:
 
@@ -95,14 +99,14 @@ Measured against healpy `map2alm_spin`, median per-`ℓ` `C_ℓ` error over `2 �
 | 32 | 64 | 1.0e-4 | 4.0e-4 | 7.7e-5 | 4.1e-4 |
 | 64 | 128 | 3.3e-5 | 1.6e-4 | 2.6e-5 | 2.1e-4 |
 
-Reproduce with `tests/test_spin_paper_accuracy.py`.
+Reproduce with `tests/test_spin_paper_accuracy.py`; the backward accuracy is pinned in `tests/test_spin_backward.py`.
 
 The individual pipeline stages are exposed in the `src` package (`transform_healpix_to_grid`, `DFS`, `apply_nuFFT`, `FSHT`, and their inverses).
 
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest    # full suite (165 tests)
+PYTHONPATH=. python -m pytest    # full suite (201 tests)
 python -m pytest -m "not ft"     # skip tests that need libfasttransforms
 ```
 
@@ -113,4 +117,4 @@ Tests that need the C library skip cleanly when it is not installed.
 ## Notes
 
 - The math requires float64; this is handled for you (see `src/_bootstrap.py`).
-- `backward_spin` currently synthesizes through the library's equiangular grid and resamples to HEALPix, so the inverse spin transform is resampling-limited even though the forward is not.
+- `backward_spin` runs only the `spin = +2` pass: `z = Q + iU` carries the whole real `(Q, U)` pair, and the `-2` coefficients are fixed by the reality of `Q` and `U`.

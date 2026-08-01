@@ -267,6 +267,27 @@ def spin_g_to_library(
     return A
 
 
+def spin_g_from_library(
+    A: np.array, scale: float = SPIN_SCALE_2PI, real_sh_norm: bool = True
+) -> np.array:
+    """Inverse of :func:`spin_g_to_library`: library convention -> pipeline ``g``.
+
+    The synthesis counterpart. ``spinsph2fourier`` hands back a bivariate array in the
+    library's own convention (colatitude ``theta``, complex-SH normalized, unit gain);
+    this puts it back into the array ``convert_to_bivar_coeffs`` expects -- the pipeline's
+    real-SH packing, the ``1/(2*pi)`` gain, and the ``x = pi - theta`` reflection whose
+    ``(-1)^k`` row phase MUST be reapplied here, in the bivariate domain, for the same
+    reason ``spin_g_to_library`` removes it here (the reflection flips the spin, so no
+    phase on the coefficients can stand in for it).
+    """
+    g = np.array(A, dtype=complex)
+    if real_sh_norm:
+        g[:, 1:] *= np.sqrt(2.0)
+    g *= scale
+    g *= ((-1.0) ** np.arange(g.shape[0]))[:, None]  # back to x = pi - theta
+    return g
+
+
 def FSHT_spin(
     bivar_coeffs: jnp.array,
     spin: int,
@@ -291,12 +312,25 @@ def FSHT_spin(
     )
 
 
-def inverse_FSHT_spin(F: jnp.array, nside: int, spin: int) -> jnp.array:
-    """Spin-``spin`` ``F`` array -> bivariate Fourier coefficients (inverse FSHT)."""
+def inverse_FSHT_spin(
+    F: jnp.array,
+    nside: int,
+    spin: int,
+    scale: float = SPIN_SCALE_2PI,
+    real_sh_norm: bool = True,
+) -> jnp.array:
+    """Spin-``spin`` ``F`` array -> bivariate Fourier coefficients (inverse FSHT).
+
+    The exact inverse of :func:`FSHT_spin`: ``spinsph2fourier`` then
+    ``spin_g_from_library`` (the ``(-1)^k`` colatitude reflection, the ``1/(2*pi)``
+    gain and the real-SH ``sqrt(2)``) then ``convert_to_bivar_coeffs``. Returns
+    ``(library-convention g, pipeline bivariate coefficients)``.
+    """
     from .ft_sphere import spinsph2fourier
 
     bivar_coeffs = spinsph2fourier(np.asarray(F), spin)
-    C = convert_to_bivar_coeffs(bivar_coeffs, nside, spin=spin)
+    g = spin_g_from_library(bivar_coeffs, scale=scale, real_sh_norm=real_sh_norm)
+    C = convert_to_bivar_coeffs(g, nside, spin=spin)
     return bivar_coeffs, C
 
 
@@ -305,13 +339,18 @@ def _spin_conv_phase(m: int, spin: int) -> float:
 
     The FastTransforms spin-weighted harmonics carry a longitude phase relative to
     healpy's (the spin analog of the scalar ``(-1)^l`` colatitude phase): a unit
-    healpy ``s_a_{l,m}`` comes back as ``(-1)^m`` times the F-array cell, EXCEPT in
-    the ``s < 0`` interior ``0 <= m < |s|`` (where ``m+s < 0`` flips the Jacobi
-    ``(|m+s|, |m-s|)`` ordering), where the phase is ``+1`` instead. Measured with
-    single ``+-2 Y_{l,m}`` probes against healpy (tests/test_spin_FSHT.py); for the
-    polarization spins ``s = +-2`` this is all the cases that occur.
+    healpy ``s_a_{l,m}`` comes back as ``(-1)^m`` times the F-array cell, EXCEPT
+    where ``m + spin <= 0``, which flips the Jacobi ``(|m+s|, |m-s|)`` ordering and
+    absorbs the sign, leaving ``+1``.
+
+    Valid for every SIGNED ``m`` (the synthesis direction needs ``m < 0`` too; the
+    analysis only ever reads ``m >= 0``). Measured with single ``+-2 Y_{l,m}`` probes
+    against healpy across ``-lmax <= m <= lmax``: for ``spin = +2`` the exception is
+    ``m <= -2`` and for ``spin = -2`` it is ``m <= 1``, both exactly ``m + spin <= 0``.
+    On ``m >= 0`` this is identical to the old ``spin < 0 and 0 <= m < |spin|`` rule
+    for the polarization spins ``s = +-2``, which are all the cases that occur.
     """
-    if spin < 0 and 0 <= m < abs(spin):
+    if m + spin <= 0:
         return 1.0
     return (-1.0) ** m
 

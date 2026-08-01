@@ -1,17 +1,20 @@
 """Spin-2 (polarization Q/U <-> E/B) transforms.
 
 This wires the spin stages into an end-to-end ``forward_spin`` / ``backward_spin``
-and follows SPIN2_PLAN.md. Two analysis routes exist:
+and follows SPIN2_PLAN.md. Both directions are native (no resampling) by default;
+``backward_spin(..., synthesis="hp2sph")`` reproduces ``hp.alm2map_spin`` to machine
+precision. Two routes exist for each direction:
 
-* ``analysis="hp2sph"`` (default): the hand-rolled DFS + latitude nuFFT analysis --
-  the true HP2SPH method, no resampling anywhere. Beats healpy ``map2alm_spin`` by
-  4-8x on the median per-l C_l error at every nside tested (8 to 64), and converges
-  with nside (``tests/test_spin_paper_accuracy.py``).
+* ``"hp2sph"`` (default): the hand-rolled DFS + latitude nuFFT, no resampling anywhere
+  -- the true HP2SPH method. The forward beats healpy ``map2alm_spin`` by 4-8x on the
+  median per-l C_l error at every nside tested (8 to 64) and converges with nside; the
+  backward is exact to ~3e-13 for any ``lmax <= 2*nside``, save the single
+  ``l = m = lmax`` grid-Nyquist corner at ``lmax = 2*nside``
+  (``tests/test_spin_paper_accuracy.py``, ``tests/test_spin_backward.py``).
 
-* ``analysis="library"``: resample the HEALPix ``(Q, U)`` onto the FastTransforms
-  equiangular grid and use the library's own ``spinsph_analysis`` for the
-  grid->bivariate-Fourier step, then ``fourier2spinsph`` + the E/B decode. Exact in
-  the grid->coefficients step, but its accuracy floor is the HEALPix<->equiangular
+* ``"library"``: resample between HEALPix and the FastTransforms equiangular grid and
+  use the library's own ``spinsph_analysis`` / ``spinsph_synthesis``. Exact in the
+  grid<->coefficients step, but its accuracy floor is the HEALPix<->equiangular
   RESAMPLING (bilinear ``hp.get_interp_val``), so it is only accurate when the map is
   well oversampled (``nside`` well above ``lmax``). Kept as an independent cross-check
   of the decode, which it validates against healpy in ``tests/test_spin_FSHT.py``.
@@ -30,6 +33,16 @@ analytic -- there is no kink). Three separate bugs were responsible:
    undone in the bivariate domain, because the reflection FLIPS THE SPIN and so cannot
    be undone by a phase on the output coefficients.
 
+The native backward needed two more:
+
+4. ``FSHT._spin_conv_phase`` only covered ``m >= 0``; the synthesis needs the signed-m
+   rule (``+1`` where ``m + spin <= 0``, else ``(-1)^m``). Assuming ``+1`` throughout
+   ``m < 0`` flipped the sign of the ``m = -1`` column at ``spin = +2``.
+5. ``data_interpolation.transform_grid_to_healpix`` TRUNCATED each polar ring's
+   longitude spectrum instead of ALIASING it onto the ring's own pixels -- invisible on
+   a round trip (the forward zero-pads, so the folded-in entries are exactly 0) but on
+   the synthesis side it discarded the ``|m| = |spin|`` content that is O(1) at the pole.
+
 Ground truth throughout is healpy ``map2alm_spin`` / ``alm2map_spin`` with spin 2.
 """
 
@@ -44,13 +57,14 @@ from .ft_sphere import (
 )
 from .FSHT import (
     FSHT_spin,
+    inverse_FSHT_spin,
     spin_to_EB,
     _spin_F_col,
     _spin_conv_phase,
 )
-from .data_interpolation import transform_healpix_to_grid
-from .double_fourier_sphere import DFS, dfs_mode_mask
-from .nuFFT import apply_nuFFT
+from .data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
+from .double_fourier_sphere import DFS, DFS_inverse, dfs_mode_mask
+from .nuFFT import apply_nuFFT, inverse_nuFFT
 
 SPIN = 2  # the polarization spin; the pipeline runs the +SPIN and -SPIN passes
 
@@ -126,12 +140,10 @@ def forward_spin(Q, U, lmax, analysis="hp2sph"):
 def _F_phase(m, spin):
     """Phase relating an F-array cell to the healpy spin coefficient: F = phase * s_a.
 
-    For ``m >= 0`` this is the decode phase ``_spin_conv_phase`` (verified by the
-    F->alm probes); for ``m < 0`` the F columns carry the spin coefficient with no
-    extra sign (``+1``), measured the same way (tests/test_spin_FSHT.py covers the
-    m>=0 decode; the m<0 columns are exercised by the backward round trip).
+    ``_spin_conv_phase`` is measured for every SIGNED ``m`` (see its docstring), so
+    this is just an alias kept for readability at the call site.
     """
-    return _spin_conv_phase(m, spin) if m >= 0 else 1.0
+    return _spin_conv_phase(m, spin)
 
 
 def _build_spin_F(a_signed, lmax, N, M, spin):
@@ -146,30 +158,30 @@ def _build_spin_F(a_signed, lmax, N, M, spin):
     return F
 
 
-def backward_spin(aE, aB, nside, lmax=None):
-    """healpy-ordered ``(aE, aB)`` -> HEALPix ``(Q, U)`` map (library synthesis route).
+def _signed_spin_alm(aE, aB, lmax, spin):
+    """``(ell, m) -> s_a_{l,m}`` for all signed ``m``, from healpy-ordered E/B alm.
 
-    Builds the spin ``F`` array from ``(aE, aB)`` (all signed ``m`` via the reality
-    of Q/U), synthesizes ``Q + iU`` on the equiangular grid with the library, and
-    resamples back to HEALPix. Resampling-limited, like the ``"library"`` forward.
-    ``lmax`` defaults to the band of ``aE``.
+    E and B are REAL parity fields, so healpy stores only ``m >= 0``; the negative
+    orders follow from ``a_{l,-m} = (-1)^m conj(a_{l,m})``. The spin coefficients are
+    ``+2a = -(aE + i aB)`` and ``-2a = -(aE - i aB)``.
     """
-    aE = np.asarray(aE)
-    aB = np.asarray(aB)
-    if lmax is None:
-        lmax = hp.Alm.getlmax(len(aE))
-    N, M, theta, phi = _equiangular_grid(lmax)
+    sgn = 1.0 if spin > 0 else -1.0
 
     def healpy_alm(arr, ell, m):
-        # signed-m healpy coefficient via the reality a_{l,-m} = (-1)^m conj(a_{l,m})
         if m >= 0:
             return arr[hp.Alm.getidx(lmax, ell, m)]
         return ((-1.0) ** m) * np.conj(arr[hp.Alm.getidx(lmax, ell, -m)])
 
-    def a_plus(ell, m):  # +2 a = -(aE + i aB)
-        return -(healpy_alm(aE, ell, m) + 1j * healpy_alm(aB, ell, m))
+    def a_signed(ell, m):
+        return -(healpy_alm(aE, ell, m) + sgn * 1j * healpy_alm(aB, ell, m))
 
-    Fp = _build_spin_F(a_plus, lmax, N, M, +SPIN)
+    return a_signed
+
+
+def _backward_spin_library(aE, aB, nside, lmax):
+    """Equiangular library synthesis + bilinear resample to HEALPix (see ``backward_spin``)."""
+    N, M, theta, phi = _equiangular_grid(lmax)
+    Fp = _build_spin_F(_signed_spin_alm(aE, aB, lmax, +SPIN), lmax, N, M, +SPIN)
     zp = spinsph_synthesis(spinsph2fourier(Fp, +SPIN), +SPIN)  # grid Q + iU
 
     npix = hp.nside2npix(nside)
@@ -177,6 +189,70 @@ def backward_spin(aE, aB, nside, lmax=None):
     Q = _grid_interp(zp.real, theta, phi, th, ph)
     U = _grid_interp(zp.imag, theta, phi, th, ph)
     return Q, U
+
+
+def _backward_spin_hp2sph(aE, aB, nside, lmax):
+    """The native HP2SPH spin synthesis -- the exact mirror of ``_spin_F_hp2sph``.
+
+    ``inverse_FSHT_spin`` -> ``inverse_nuFFT`` -> ``DFS_inverse`` ->
+    ``transform_grid_to_healpix``, i.e. the spin counterpart of the scalar
+    ``main.backward``. Nothing is resampled, so unlike the library route this is not
+    interpolation-limited: it reproduces ``hp.alm2map_spin`` to machine precision.
+
+    Only the ``spin = +2`` pass is run. ``z = Q + iU`` already carries the whole real
+    ``(Q, U)`` pair, and the ``-2`` coefficients are not independent (they are fixed by
+    the reality of Q and U, which ``_signed_spin_alm`` already uses), so a second pass
+    would recompute the same map.
+    """
+    L = 2 * nside  # the pipeline's internal (compact) latitude band = lmax
+    a_plus = _signed_spin_alm(aE, aB, lmax, +SPIN)
+    # Build F straight at the pipeline band: the F row (l - max(|m|, |s|)) and column
+    # index are both independent of L, so a low-lmax input is simply zero-padded.
+    F = _build_spin_F(a_plus, lmax, L + 1, 2 * L + 1, +SPIN)
+
+    _, bivar = inverse_FSHT_spin(F, nside, +SPIN)
+    fft_lat = inverse_nuFFT(bivar)
+    fft_coeff = DFS_inverse(fft_lat, spin=+SPIN)
+    z = transform_grid_to_healpix(fft_coeff, fft_coeff, real_output=False)
+    return np.real(z), np.imag(z)
+
+
+def backward_spin(aE, aB, nside, lmax=None, synthesis="hp2sph"):
+    """healpy-ordered ``(aE, aB)`` -> HEALPix ``(Q, U)`` map.
+
+    ``synthesis`` selects the coefficients->map route, mirroring ``forward_spin``'s
+    ``analysis``:
+
+    * ``"hp2sph"`` (default, the true method): the native inverse pipeline, no
+      resampling. EXACT -- it reproduces ``hp.alm2map_spin`` to ~3e-13 for every band
+      ``lmax <= 2*nside - 1``, at every nside tested (8-64).
+      At ``lmax = 2*nside`` exactly, the single ``l = m = lmax`` coefficient is the
+      one mode that cannot be synthesised: ``m = +2*nside`` and ``m = -2*nside`` are
+      the same mode on the ``4*nside``-point longitude grid, and the per-ring ``phi0``
+      offsets give them different phases, so no single Nyquist column can carry both.
+      This is the synthesis face of the forward's documented half-gain at that corner.
+      Everything else in that band stays exact; drop to ``lmax <= 2*nside - 1`` if the
+      corner coefficient matters.
+    * ``"library"``: synthesize on the FastTransforms equiangular grid and bilinearly
+      resample to HEALPix. Resampling-limited, like ``analysis="library"``; kept as an
+      independent cross-check.
+
+    ``lmax`` defaults to the band of ``aE``.
+    """
+    aE = np.asarray(aE)
+    aB = np.asarray(aB)
+    if lmax is None:
+        lmax = hp.Alm.getlmax(len(aE))
+    if synthesis == "library":
+        return _backward_spin_library(aE, aB, nside, lmax)
+    if synthesis == "hp2sph":
+        if lmax > 2 * nside:
+            raise ValueError(
+                f"lmax={lmax} exceeds the grid band 2*nside={2 * nside}; the "
+                "HP2SPH synthesis grid cannot represent it (raise nside or lower lmax)"
+            )
+        return _backward_spin_hp2sph(aE, aB, nside, lmax)
+    raise ValueError(f"unknown synthesis {synthesis!r}; use 'hp2sph' or 'library'")
 
 
 def _grid_interp(grid, theta, phi, th, ph):

@@ -1,9 +1,8 @@
 # HP2SPH test suite
 
-Per-stage and end-to-end tests for the HEALPix <-> alm pipeline. The tests are
-designed to **encode correct behaviour and surface failure modes**, not to be
-made green by loosening tolerances — several currently fail on purpose because
-the pipeline is not yet fully correct (see "Known failures" below).
+Per-stage and end-to-end tests for the HEALPix <-> alm pipeline, scalar and spin-2.
+The tests are designed to **encode correct behaviour and surface failure modes**,
+not to be made green by loosening tolerances. The whole suite passes (201 tests).
 
 ## Running
 
@@ -42,6 +41,18 @@ it cannot be loaded.
 | `test_ft_sphere.py` | 4 | in-process `libfasttransforms` backend round trip (skips w/o the C library) |
 | `test_pipeline.py` | all | full map round trip (exact), **forward alm vs input / vs map2alm** |
 | `test_paper_accuracy.py` | all | paper-style known-alm per-`l` error + convergence vs `nside`, compared to healpy |
+| `test_conditioning.py` | 3 | latitude Vandermonde conditioning per band (the accuracy/invertibility trade-off) |
+
+Spin-2 (polarization) — `SPIN2_PLAN.md` phases 1 to 5:
+
+| file | stage | what it checks |
+|------|-------|----------------|
+| `test_spin_ft_sphere.py` | 4 | the `libfasttransforms` spin backend round trip (`ft`) |
+| `test_spin_plumbing.py` | 1, 3 | complex `Q+iU` carried through interp + nuFFT; the real `I` path unchanged |
+| `test_spin_dfs.py` | 2 | spin mirror parity `(-1)^(m+s)`, the glide reflection, the south-pole row |
+| `test_spin_FSHT.py` | 4 | the `F`-array decode + E/B combination, validated against healpy |
+| `test_spin_paper_accuracy.py` | all | `forward_spin` vs healpy `map2alm_spin` per-`l`; single-harmonic gains |
+| `test_spin_backward.py` | all | `backward_spin` vs healpy `alm2map_spin` (**exact**); the signed-`m` phase; polar aliasing |
 
 Fixtures (`conftest.py`) parametrise over `nside in {4, 8, 16}` and provide a
 random band-limited `random_alm`, the synthesised `healpix_map`, and a `relerr`

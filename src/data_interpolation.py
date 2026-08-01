@@ -251,10 +251,24 @@ def transform_grid_to_healpix(
         return fft_coeffs
 
     def process_polar_ring(fft_coeff, num_pts):
-        mid = num_pts // 2
+        # ALIAS (fold), do not truncate. A ring of num_pts pixels samples the
+        # longitude field at num_pts points, so mode m lands in bin m % num_pts:
+        # the correct pixel values are sum_m c_m exp(i m phi_j), which is the FOLD
+        # of the 4*nside-wide spectrum onto num_pts bins. Simply DROPPING
+        # |m| >= num_pts//2 (what this did) throws that content away instead.
+        #
+        # For a spectrum produced by ``transform_healpix_to_grid`` the two are
+        # bit-identical -- the forward zero-pads, so every folded-in entry is
+        # exactly 0 -- which is why the round trip never noticed. They differ when
+        # the spectrum comes from the SYNTHESIS side (``main.backward`` /
+        # ``spin_transform.backward_spin``), where the high-|m| entries carry real
+        # signal. For a SPIN field that is the whole ball game: |m| = |spin| is O(1)
+        # AT the pole and is exactly the Nyquist of the innermost 4-pixel ring (the
+        # same asymmetry ``ring_mode_mask`` handles on the analysis side), and
+        # truncating it left the innermost polar rings ~100% wrong.
+        m_signed = np.rint(np.fft.fftfreq(len(fft_coeff)) * len(fft_coeff)).astype(int)
         corrected_coeffs_back = np.zeros(num_pts, dtype=complex)
-        corrected_coeffs_back[:mid] = fft_coeff[:mid]
-        corrected_coeffs_back[-mid:] = fft_coeff[-mid:]
+        np.add.at(corrected_coeffs_back, m_signed % num_pts, np.asarray(fft_coeff))
 
         # numpy (not jax) FFT for the same per-ring-dispatch reason as the forward.
         fft_coeffs = _maybe_real(
