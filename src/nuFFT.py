@@ -306,7 +306,7 @@ def cg_nufft_forward(
     # Calculate Voronoi weights. With a ``sample_mask`` the weights become per-column:
     # a (ring, mode) entry the ring never resolved gets weight 0, so it drops out of the
     # least squares as MISSING rather than being asserted to be zero (see
-    # ``data_interpolation.ring_mode_mask``). The blocks stay independent and each
+    # ``data_interpolation.ring_fold_plan``). The blocks stay independent and each
     # A^H W A is still Hermitian positive semi-definite, so batched CG is unaffected;
     # only the elementwise weighting below changes shape from (M,) to (n_trans, M).
     weights = compute_voronoi_weights_1d(x)
@@ -498,7 +498,7 @@ def apply_nuFFT(
 
     ``sample_mask`` (not available with ``svd``) marks which (latitude sample, longitude
     mode) entries the HEALPix grid actually resolved -- see
-    ``double_fourier_sphere.dfs_mode_mask`` / ``dfs_fold_plan``. Masked entries get zero
+    ``double_fourier_sphere.dfs_fold_plan``. Masked entries get zero
     weight, so they are treated as MISSING instead of zero. This matters only where a mode
     carries real amplitude on a ring too coarse to sample it, i.e. ``|m|`` near ``|spin|``
     on the innermost polar rings of a SPIN field; the scalar path is unaffected and
@@ -521,11 +521,7 @@ def apply_nuFFT(
     """
     nside = mp.shape[1] // 4
     if rtol is None:
-        # LSMR is used on the rank-deficient MASKED problem, where the trailing
-        # singular values are ~0: tightening past ~1e-6 only grinds on null-space
-        # directions. Measured at nside 32, spin 2, full mask: rtol 1e-9 -> 21.7 s,
-        # 1e-6 -> ~1 s, with the median C_l error flat at ~1.4e-4 across the range.
-        rtol = 1e-6 if solver == "lsmr" else 1e-9
+        rtol = 1e-9
     if solve_modes is None:
         solve_modes = 4 * nside + 1  # well-conditioned latitude band (|k| <= 2*nside)
     if N_modes is None:

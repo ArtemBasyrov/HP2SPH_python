@@ -16,7 +16,7 @@ Two bugs had to be fixed to get there, and each has a dedicated test below:
   longitude spectrum where it should ALIAS it onto the ring's own pixels. Invisible on
   a round trip -- the forward zero-pads, so every folded-in entry is exactly zero --
   but on the synthesis side it discarded the ``|m| = |spin|`` content, which for a
-  spin field is O(1) AT the pole (the same asymmetry ``ring_mode_mask`` handles on the
+  spin field is O(1) AT the pole (the same asymmetry ``ring_fold_plan`` handles on the
   analysis side). It left the innermost polar rings ~100% wrong.
 
 See SPIN2_PLAN.md (the "native spin backward" item) and CLAUDE.md.

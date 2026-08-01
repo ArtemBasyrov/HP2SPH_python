@@ -26,12 +26,13 @@ the pole boundary condition the plan hypothesized (a spin field's latitude profi
 ``sin^|m+s|(theta/2) cos^|m-s|(theta/2) P(cos theta)``, whose DFS mirror extension is
 analytic -- there is no kink). Three separate bugs were responsible:
 
-1. ``data_interpolation.ring_mode_mask`` -- the innermost polar rings have 4, 8, 12
-   pixels and cannot resolve ``|m| = |s|``, which is exactly the mode a spin-s field
-   carries at O(1) INTO the pole. The zero-padding asserted that content was zero.
-   SUPERSEDED by the alias fold (``ring_fold_plan``, ``alias="fold"``), which models what
-   the coarse ring actually measured instead of discarding it -- 12-36x more accurate and
-   about 2x faster, because the system is full rank again and CG replaces LSMR.
+1. The innermost polar rings have 4, 8, 12 pixels and cannot resolve ``|m| = |s|``,
+   which is exactly the mode a spin-s field carries at O(1) INTO the pole. The
+   zero-padding asserted that content was zero. Fixed by the alias fold
+   (``data_interpolation.ring_fold_plan``), which models what the coarse ring actually
+   measured. An earlier fix dropped those entries instead (``ring_mode_mask`` plus an
+   LSMR minimum-norm solve); it was 12-36x less accurate and about 2x slower, and has
+   been removed.
 2. ``double_fourier_sphere.DFS`` read the last original ring instead of the filled
    south pole row (an off-by-one), so half the polynomial pole fill was discarded.
 3. ``FSHT.spin_g_to_library`` -- the pipeline's ``x = pi - theta`` reflection has to be
@@ -68,7 +69,7 @@ from .FSHT import (
     _spin_conv_phase,
 )
 from .data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
-from .double_fourier_sphere import DFS, DFS_inverse, dfs_fold_plan, dfs_mode_mask
+from .double_fourier_sphere import DFS, DFS_inverse, dfs_fold_plan
 from .nuFFT import apply_nuFFT, inverse_nuFFT
 
 SPIN = 2  # the polarization spin; the pipeline runs the +SPIN and -SPIN passes
@@ -102,51 +103,35 @@ ALIAS_RTOL = 1e-7
 CG_MAXITER = 20000  # a safety cap only; rtol stops it in O(100) iterations
 
 
-def _spin_F_hp2sph(Q, U, spin, alias="fold", alias_tol=ALIAS_TOL, rtol=ALIAS_RTOL):
+def _spin_F_hp2sph(Q, U, spin, alias_tol=ALIAS_TOL, rtol=ALIAS_RTOL):
     """Hand-rolled HP2SPH analysis -> spin-SH ``F`` array (no resampling).
 
-    ``alias`` selects how the latitude fit treats the polar rings, which cannot resolve
-    every longitude mode:
-
-    * ``"fold"`` (default) -- ``dfs_fold_plan``: model the ring's ALIAS SUM exactly and
-      keep the "unresolved mode = 0" assertion wherever the spin envelope says the mode
-      is negligible there (below ``alias_tol``). Full rank, so plain CG solves it, in
-      O(100) iterations.
-    * ``"mask"`` -- the previous behaviour: ``dfs_mode_mask`` drops every unresolved
-      entry, which is rank deficient and needs LSMR's minimum-norm solution.
-
-    The fold is faster AND more accurate than the mask, so there is no trade to make
-    between them. Measured at nside 64, seed 0, slope 1.5, relative ``C_l^EE`` error:
-
-        route                     median     top band   l=124..128     t[s]
-        mask                    1.70e-05     2.12e-04     4.03e-03     3.00
-        fold, defaults          2.12e-06     9.63e-06     1.18e-05     1.46
+    The latitude fit uses ``dfs_fold_plan``: model each polar ring's ALIAS SUM exactly,
+    and keep the "unresolved mode = 0" assertion wherever the spin envelope says the mode
+    is negligible on that ring (below ``alias_tol``). That is full rank, so plain CG
+    solves it in O(100) iterations.
 
     ``alias_tol`` and ``rtol`` trade accuracy against cost, and they interact: a smaller
     ``alias_tol`` relaxes more assertions, which models the field better but frees more
     directions for CG to resolve, so it needs a tighter ``rtol`` to pay off at all
-    (``alias_tol=1e-4`` at ``rtol=1e-6`` is WORSE than the defaults and 4x dearer). The
-    accurate end of the range is ``alias_tol=1e-3, rtol=1e-8``: band-edge 3.8e-6 (1000x
-    better than the mask) for 9.9 s, i.e. 3.3x the mask's cost.
+    (``alias_tol=1e-4`` at ``rtol=1e-6`` is WORSE than the defaults and 4x dearer).
+    Measured at nside 64, seed 0, slope 1.5, relative ``C_l^EE`` error over
+    ``l = 124..128``: 1.97e-5 at 0.82 s (``rtol=1e-6``), 1.18e-5 at 1.46 s (the
+    defaults), 3.85e-6 at 9.85 s (``alias_tol=1e-3, rtol=1e-8``).
     """
     z = Q + 1j * U if spin > 0 else Q - 1j * U
     nside = hp.npix2nside(np.asarray(z).shape[0])
     upsampled, fft_coeff = transform_healpix_to_grid(z)
     _, dfs = DFS(upsampled, fft_coeff, spin=spin)
-    if alias == "fold":
-        target, phase, keep = dfs_fold_plan(nside, spin, alias_tol)
-        fft_lat = apply_nuFFT(
-            dfs,
-            solver="cg",
-            sample_mask=keep,
-            fold=(target, phase),
-            rtol=rtol,
-            maxiter=CG_MAXITER,
-        )
-    elif alias == "mask":
-        fft_lat = apply_nuFFT(dfs, solver="lsmr", sample_mask=dfs_mode_mask(nside))
-    else:
-        raise ValueError(f"unknown alias {alias!r}; use 'fold' or 'mask'")
+    target, phase, keep = dfs_fold_plan(nside, spin, alias_tol)
+    fft_lat = apply_nuFFT(
+        dfs,
+        solver="cg",
+        sample_mask=keep,
+        fold=(target, phase),
+        rtol=rtol,
+        maxiter=CG_MAXITER,
+    )
     return FSHT_spin(fft_lat, spin)
 
 
@@ -156,7 +141,7 @@ def forward_spin(Q, U, lmax, analysis="hp2sph", **kw):
     ``analysis`` selects the grid->coefficients route (see the module docstring):
     ``"hp2sph"`` (default, the hand-rolled DFS+nuFFT, no resampling) or ``"library"``
     (resample + the library's exact analysis, resampling-limited). Extra keywords go to
-    ``_spin_F_hp2sph`` (``alias``, ``alias_tol``, ``rtol``).
+    ``_spin_F_hp2sph`` (``alias_tol``, ``rtol``).
     """
     Q = np.asarray(Q)
     U = np.asarray(U)

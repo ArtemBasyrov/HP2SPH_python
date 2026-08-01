@@ -2,11 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 import healpy as hp
 
-from .data_interpolation import (
-    create_latitude_array,
-    ring_fold_plan,
-    ring_mode_mask,
-)
+from .data_interpolation import create_latitude_array, ring_fold_plan
 
 # Number of HEALPix rings on EACH side of a pole used to extrapolate the (unsampled)
 # pole-ring value. Capped at the polar-cap size (nside-1) so the stencil never
@@ -112,29 +108,6 @@ def DFS_inverse(double_fft: jnp.array, spin: int = 0) -> jnp.array:
     return fft_coeff
 
 
-def dfs_mode_mask(nside: int) -> np.ndarray:
-    """``ring_mode_mask`` laid out like the ``double_fft`` array ``DFS`` returns.
-
-    Same row layout as ``interpolate_polar_rings``/``_upsampled_latitudes``
-    (``[north pole, rings, south pole, mirrored rings]``) and the same natural
-    (fftshifted) longitude order, so it can be handed straight to
-    ``nuFFT.apply_nuFFT(sample_mask=...)``.
-
-    The two pole rows are extrapolated, not measured, so a pole mode counts as resolved
-    only where EVERY ring in the Lagrange stencil resolved it. The stencil always
-    reaches the innermost (4-pixel) ring, so the poles constrain only ``|m| <= 1``.
-    The mirrored half repeats the northern mask reversed: the glide reflection changes
-    each mode's sign, never which modes the ring sampled.
-    """
-    mask = ring_mode_mask(nside)
-    npts = max(2, min(POLE_INTERP_NPTS, nside - 1))
-    pole = mask[:npts].all(axis=0)
-    doubled = np.concatenate(
-        (pole[None, :], mask, pole[None, :], np.flip(mask, axis=0)), axis=0
-    )
-    return np.fft.fftshift(doubled, axes=1)
-
-
 def dfs_fold_plan(
     nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None
 ) -> (np.ndarray, np.ndarray, np.ndarray):
@@ -152,8 +125,8 @@ def dfs_fold_plan(
     A pole row is data only in the weak sense that it is a Lagrange extrapolation of the
     ring rows, so it inherits their aliasing: a relaxed mode is both MISSING from its own
     pole slot (the measurement zero-padded it) and PRESENT in the slot it folds onto. Both
-    of those pole slots are dropped. That is far less restrictive than ``dfs_mode_mask``,
-    which keeps only ``|m| <= 1`` there.
+    of those pole slots are dropped. That is far less restrictive than the superseded
+    mask fix, which kept only ``|m| <= 1`` there.
     """
     target, phase, keep = ring_fold_plan(nside, spin, tol, lmax)
     n_rings, n_lon = target.shape

@@ -124,10 +124,11 @@ def test_spin_hp2sph_single_harmonic_gain(ell, m, field):
 
     This is the test the ``m != 0`` fix is about. Three things had to be right:
 
-    * ``ring_mode_mask`` -- the innermost polar rings (4 pixels) do not resolve
-      ``|m| = 2``, which for a spin-2 field is exactly the mode that is O(1) AT the
-      pole. Zero-padding them asserted that content was zero; the mask drops it as
-      missing instead.
+    * the polar-ring alias (``ring_fold_plan``) -- the innermost polar rings (4 pixels)
+      do not resolve ``|m| = 2``, which for a spin-2 field is exactly the mode that is
+      O(1) AT the pole. Zero-padding them asserted that content was zero; the fold
+      models what the ring actually measured, the alias sum over the mode's residue
+      family.
     * the south-pole row of the DFS (``test_dfs_south_pole_row_is_the_pole``);
     * ``FSHT.spin_g_to_library`` -- the ``x = pi - theta`` reflection has to be undone
       in the BIVARIATE domain, because the reflection flips the spin

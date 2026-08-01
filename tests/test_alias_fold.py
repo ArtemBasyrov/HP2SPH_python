@@ -192,25 +192,28 @@ def test_fold_kills_the_alias_leakage_of_a_single_harmonic(m):
     ``m = 3`` aliases onto ``m = -1`` on the innermost 4-pixel ring, where a spin-2 field
     is O(theta) rather than O(theta^3), so the ring's own bin carried it and the pipeline
     attributed it to the wrong mode.
+
+    The threshold is absolute, not a ratio against the superseded masked route, which no
+    longer exists. For reference that route measured 2.5e-2 (m=3) and 1.9e-2 (m=5) here.
     """
     nside, lmax = 16, 32
     ell = lmax - 1
     aE, _, Q, U = _spin_probe(nside, lmax, ell, m)
     i0 = hp.Alm.getidx(lmax, ell, m)
 
-    def leak(**kw):
-        E, B = forward_spin(Q, U, lmax, **kw)
-        return np.sqrt(np.sum(np.abs(E - aE) ** 2)) / abs(aE[i0]), E[i0] / aE[i0]
-
-    masked, _ = leak(alias="mask")
-    folded, gain = leak(alias="fold")
-    assert masked > 1e-2  # the documented symptom is still there without the fold
-    assert folded < masked / 10
-    assert abs(gain - 1.0) < 1e-3
+    E, _ = forward_spin(Q, U, lmax)
+    leak = np.sqrt(np.sum(np.abs(E - aE) ** 2)) / abs(aE[i0])
+    assert leak < 2e-3
+    assert abs(E[i0] / aE[i0] - 1.0) < 1e-3
 
 
-def test_fold_beats_mask_and_ring_weights_at_the_band_edge():
-    """The point of item A: the top of the band, which is where the error lived."""
+def test_fold_beats_ring_weights_at_the_band_edge():
+    """The point of item A: the top of the band, which is where the error lived.
+
+    healpy's weighted IQU path is the strongest single-pass polarization route it has
+    (``map2alm_spin`` takes neither weights nor iteration), and the alias was what kept
+    HP2SPH behind it here.
+    """
     nside, lmax = 16, 32
     from benchmarks.common import random_EB
 
@@ -230,7 +233,27 @@ def test_fold_beats_mask_and_ring_weights_at_the_band_edge():
     def rms(a):
         return np.sqrt(np.mean(cl_err(a)[edge] ** 2))
 
-    masked = rms(forward_spin(Q, U, lmax, alias="mask")[0])
-    folded = rms(forward_spin(Q, U, lmax, alias="fold")[0])
-    assert folded < masked / 5
-    assert folded < rms(ring) / 5
+    assert rms(forward_spin(Q, U, lmax)[0]) < rms(ring) / 5
+
+
+def test_fold_survives_above_band_power():
+    """The regime where the superseded masked route failed worst.
+
+    Its accuracy there rested on LSMR's early stopping rather than on stability, and CG
+    has no equivalent accident, so this had to be checked before dropping that route.
+    Measured at nside 8, ``signal_lmax = 4*nside``: the masked route gave a band-edge
+    relative C_l error of 1.7e+1, the fold gives ~8e-2.
+    """
+    nside, lmax = 8, 16
+    signal_lmax = 4 * nside
+    from benchmarks.common import random_EB
+
+    aE, aB = random_EB(signal_lmax, seed=0, slope=1.5, mmax_cap=2 * nside - 1)
+    Q, U = hp.alm2map_spin([aE, aB], nside, SPIN, signal_lmax)
+    ref = hp.resize_alm(aE, signal_lmax, signal_lmax, lmax, lmax)
+
+    E, _ = forward_spin(Q, U, lmax)
+    c, cr = hp.alm2cl(E, lmax=lmax), hp.alm2cl(ref, lmax=lmax)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        err = np.abs(c - cr) / np.abs(cr)
+    assert np.sqrt(np.mean(err[lmax - 4 : lmax + 1] ** 2)) < 1.0

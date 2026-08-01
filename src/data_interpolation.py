@@ -38,51 +38,6 @@ def ring_pixel_counts(nside: int) -> np.array:
     return sizes
 
 
-def ring_mode_mask(nside: int) -> np.array:
-    """Which longitude modes each ring actually RESOLVES, in numpy FFT order.
-
-    A ring of ``npix`` pixels determines only the modes ``|m| < npix//2``. The bin at
-    ``|m| = npix//2`` is the ring's Nyquist: ``+m`` and ``-m`` are the same sampled
-    mode there, so the ring constrains only their sum, and everything above it is not
-    sampled at all. ``process_polar_ring`` writes that whole Nyquist bin into the
-    ``-npix//2`` slot and leaves ``+npix//2`` zero, which asserts two things the data
-    does not support.
-
-    Dropping every unresolved entry leaves the high-``|m|`` columns with samples only in
-    the equatorial belt, so the latitude least squares becomes RANK-DEFICIENT. That is
-    fine, but it must then be solved for the MINIMUM-NORM solution: use
-    ``apply_nuFFT(solver="lsmr", sample_mask=...)``. Plain CG on the normal equations
-    does not converge there -- it drifts into the null space, so the answer changes with
-    ``maxiter`` (measured: 26% at 800 iterations, 78% at 3000). Narrowing the mask to
-    the Nyquist pair alone keeps CG well posed but is ~20x less accurate for spin
-    (6.3e-4 vs 3.2e-5 median C_l error at nside 64), because the false zeros above the
-    Nyquist are what actually corrupts the ``|m| = |s|`` column.
-
-    For a SCALAR field this is harmless: every mode with ``m != 0`` dies like
-    ``theta^|m|`` toward the pole, so the mis-assigned coefficients are ~0 anyway. For a
-    SPIN-s field it is not: the mode ``m = -s`` is O(1) at the north pole and ``m = +s``
-    is O(1) at the south pole (``f_m ~ sin^|m+s|(theta/2) cos^|m-s|(theta/2)``), and
-    ``|m| = |s|`` is exactly the Nyquist of the innermost 4|s|/2-pixel ring. At spin 2
-    that is the 4-pixel ring at each pole, and its O(1) content was being written into
-    the wrong slot -- the whole "m != 0 is broken" symptom (SPIN2_PLAN.md Phase 3).
-
-    Use the mask to drop those entries from the latitude fit as MISSING data (see
-    ``nuFFT.apply_nuFFT(sample_mask=...)``). Zeroing them instead does not work: zero is
-    a false assertion about the field, not an absence of information.
-
-    Full-length rings (the ``4*nside``-pixel equatorial belt) are left fully valid,
-    including the grid's own Nyquist column ``m = -2*nside``: that ambiguity is inherent
-    to the output grid rather than to the ring, and ``FSHT.preparation`` already resolves
-    it by splitting the column symmetrically across ``+-2*nside``. Only rings COARSER
-    than the grid are masked, so the equatorial belt behaves exactly as before.
-    """
-    sizes = ring_pixel_counts(nside)
-    n_lon = 4 * nside
-    m = np.abs(np.fft.fftfreq(n_lon) * n_lon)
-    resolved = m[None, :] < (sizes // 2)[:, None]
-    return resolved | (sizes == n_lon)[:, None]
-
-
 def ring_alias_target(nside: int) -> (np.array, np.array, np.array):
     """Where each longitude mode is actually MEASURED on each ring.
 
@@ -110,7 +65,7 @@ def ring_alias_target(nside: int) -> (np.array, np.array, np.array):
     * ``phase[r, j]``  -- the ``exp(i (m - b) phi0)`` it arrives with,
     * ``resolved[r, j]`` -- whether the ring produces slot ``j`` at all. The Nyquist slot
       ``-npix//2`` counts as produced: under the fold it is a genuine constraint on the
-      ``+-npix//2`` sum, not the mis-assignment ``ring_mode_mask`` has to drop.
+      ``+-npix//2`` sum, not the mis-assignment the zero-padding makes of it.
     """
     sizes = ring_pixel_counts(nside)
     n_lon = 4 * nside
@@ -163,8 +118,8 @@ def ring_fold_plan(
     ``c_m(theta_r) = 0`` for every mode the ring does not resolve" -- when the other
     members of an alias family vanish the fold degenerates to the identity. Those zero
     assertions are not a bug, they are what makes the latitude least squares WELL
-    CONDITIONED. Dropping them all (which is what ``ring_mode_mask`` does, and what
-    folding without them would do) leaves the polar caps constrained only through the
+    CONDITIONED. Dropping them all -- which is what folding without them does, and what
+    the superseded mask fix did -- leaves the polar caps constrained only through the
     alias sums: the system stays consistent -- the true solution satisfies it to ~7e-13 --
     but becomes so ill conditioned that LSMR is still 10% off after 40000 iterations.
 
@@ -372,7 +327,7 @@ def transform_grid_to_healpix(
         # ``spin_transform.backward_spin``), where the high-|m| entries carry real
         # signal. For a SPIN field that is the whole ball game: |m| = |spin| is O(1)
         # AT the pole and is exactly the Nyquist of the innermost 4-pixel ring (the
-        # same asymmetry ``ring_mode_mask`` handles on the analysis side), and
+        # same asymmetry ``ring_fold_plan`` handles on the analysis side), and
         # truncating it left the innermost polar rings ~100% wrong.
         m_signed = np.rint(np.fft.fftfreq(len(fft_coeff)) * len(fft_coeff)).astype(int)
         corrected_coeffs_back = np.zeros(num_pts, dtype=complex)

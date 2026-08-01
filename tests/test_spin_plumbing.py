@@ -87,43 +87,6 @@ def test_nuFFT_complex_roundtrip(nside, relerr):
     assert relerr(proj2, proj) < 1e-6
 
 
-def test_ring_mode_mask_marks_polar_nyquist(nside):
-    """A ring of npix pixels resolves |m| < npix//2; full-length rings stay valid."""
-    from src.data_interpolation import ring_mode_mask, ring_pixel_counts
-
-    mask = ring_mode_mask(nside)
-    sizes = ring_pixel_counts(nside)
-    n_lon = 4 * nside
-    m = np.abs(np.fft.fftfreq(n_lon) * n_lon)
-
-    assert mask.shape == (4 * nside - 1, n_lon)
-    for r, npix in enumerate(sizes):
-        if npix == n_lon:  # equatorial belt: untouched, every column valid
-            assert mask[r].all()
-        else:
-            np.testing.assert_array_equal(mask[r], m < npix // 2)
-
-    # the innermost ring has 4 pixels, so it resolves only |m| <= 1 -- and |m| = 2 is
-    # exactly the mode a spin-2 field carries at O(1) into the pole
-    assert sizes[0] == 4
-    assert not mask[0][np.abs(np.fft.fftfreq(n_lon) * n_lon) == 2].any()
-
-
-def test_dfs_mode_mask_layout(nside):
-    """The doubled mask lines up with the DFS rows and the nuFFT sample locations."""
-    from src.double_fourier_sphere import dfs_mode_mask
-    from src.nuFFT import _upsampled_latitudes
-
-    mask = dfs_mode_mask(nside)
-    n_rings = 4 * nside - 1
-    assert mask.shape == (2 * n_rings + 2, 4 * nside)
-    assert mask.shape[0] == len(_upsampled_latitudes(nside))
-    # pole rows are extrapolated from a stencil reaching the 4-pixel ring -> |m| <= 1
-    m_nat = np.fft.fftshift(np.fft.fftfreq(4 * nside) * (4 * nside))
-    np.testing.assert_array_equal(mask[0], np.abs(m_nat) < 2)
-    np.testing.assert_array_equal(mask[n_rings + 1], mask[0])
-
-
 def test_masked_nuFFT_matches_unmasked_when_mask_is_all_true(nside):
     """An all-true mask must reproduce the unmasked solve (no accidental reweighting)."""
     from src.double_fourier_sphere import DFS
@@ -149,18 +112,13 @@ def test_lsmr_matches_cg_on_the_unmasked_problem(nside, relerr):
 
 
 @pytest.mark.ft
-def test_masked_spin_result_is_insensitive_to_lsmr_tolerance():
-    """The recovered spin alm must not depend on how hard LSMR is pushed.
+def test_spin_result_is_insensitive_to_the_cg_tolerance():
+    """The recovered spin alm must not move when the latitude solve is pushed harder.
 
-    Masking makes the latitude fit rank-deficient, so the trailing singular directions
-    are ~0 and the raw coefficient vector keeps moving in the null space as the
-    tolerance tightens. What has to be stable -- and is -- is the OBSERVABLE: the
-    physical content lives in the well-determined subspace. This is the property CG on
-    the normal equations lacked (its answer changed by 26% at 800 iterations and 78% at
-    3000), and it is why the default ``rtol`` for LSMR is 1e-6 rather than 1e-9.
+    The folded system is full rank, so this is genuine convergence rather than the
+    early stopping the superseded masked (LSMR, rank-deficient) route relied on.
     """
     from src.spin_transform import forward_spin
-    import src.nuFFT as nuFFT_mod
 
     nside, lmax = 16, 32
     rng = np.random.default_rng(4)
@@ -171,20 +129,8 @@ def test_masked_spin_result_is_insensitive_to_lsmr_tolerance():
     aE[m0] = aE[m0].real
     Q, U = hp.alm2map_spin([aE.astype(np.complex128), aB], nside, 2, lmax)
 
-    orig = nuFFT_mod.apply_nuFFT
-    out = {}
-    for rtol in (1e-4, 1e-6, 1e-8):
-        nuFFT_mod.apply_nuFFT = lambda mp, _r=rtol, **kw: orig(mp, **{**kw, "rtol": _r})
-        import src.spin_transform as ST
-
-        ST.apply_nuFFT = nuFFT_mod.apply_nuFFT
-        try:
-            out[rtol] = forward_spin(Q, U, lmax, analysis="hp2sph")[0]
-        finally:
-            nuFFT_mod.apply_nuFFT = orig
-            ST.apply_nuFFT = orig
-
-    ref = out[1e-6]
-    for rtol, got in out.items():
+    ref = forward_spin(Q, U, lmax, rtol=1e-7)[0]
+    for rtol in (1e-6, 1e-8, 1e-9):
+        got = forward_spin(Q, U, lmax, rtol=rtol)[0]
         rel = np.linalg.norm(got - ref) / np.linalg.norm(ref)
         assert rel < 1e-2, f"rtol={rtol:g} moved the alm by {rel:.2e}"
