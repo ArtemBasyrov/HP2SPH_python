@@ -6,11 +6,13 @@ and follows SPIN2_PLAN.md. Both directions are native (no resampling) by default
 precision. Two routes exist for each direction:
 
 * ``"hp2sph"`` (default): the hand-rolled DFS + latitude nuFFT, no resampling anywhere
-  -- the true HP2SPH method. The forward beats healpy ``map2alm_spin`` by 4-8x on the
-  median per-l C_l error at every nside tested (8 to 64) and converges with nside; the
+  -- the true HP2SPH method. Since the alias fold (see ``_spin_F_hp2sph``) the forward
+  beats healpy's WEIGHTED polarization route by 13-30x on the top-band C_l^EE error at
+  every nside tested (8 to 128) and converges at 2.3-2.8x per nside doubling; the
   backward is exact to ~3e-13 for any ``lmax <= 2*nside``, save the single
   ``l = m = lmax`` grid-Nyquist corner at ``lmax = 2*nside``
-  (``tests/test_spin_paper_accuracy.py``, ``tests/test_spin_backward.py``).
+  (``tests/test_alias_fold.py``, ``tests/test_spin_paper_accuracy.py``,
+  ``tests/test_spin_backward.py``).
 
 * ``"library"``: resample between HEALPix and the FastTransforms equiangular grid and
   use the library's own ``spinsph_analysis`` / ``spinsph_synthesis``. Exact in the
@@ -27,6 +29,9 @@ analytic -- there is no kink). Three separate bugs were responsible:
 1. ``data_interpolation.ring_mode_mask`` -- the innermost polar rings have 4, 8, 12
    pixels and cannot resolve ``|m| = |s|``, which is exactly the mode a spin-s field
    carries at O(1) INTO the pole. The zero-padding asserted that content was zero.
+   SUPERSEDED by the alias fold (``ring_fold_plan``, ``alias="fold"``), which models what
+   the coarse ring actually measured instead of discarding it -- 12-36x more accurate and
+   about 2x faster, because the system is full rank again and CG replaces LSMR.
 2. ``double_fourier_sphere.DFS`` read the last original ring instead of the filled
    south pole row (an off-by-one), so half the polynomial pole fill was discarded.
 3. ``FSHT.spin_g_to_library`` -- the pipeline's ``x = pi - theta`` reflection has to be
@@ -63,7 +68,7 @@ from .FSHT import (
     _spin_conv_phase,
 )
 from .data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
-from .double_fourier_sphere import DFS, DFS_inverse, dfs_mode_mask
+from .double_fourier_sphere import DFS, DFS_inverse, dfs_fold_plan, dfs_mode_mask
 from .nuFFT import apply_nuFFT, inverse_nuFFT
 
 SPIN = 2  # the polarization spin; the pipeline runs the +SPIN and -SPIN passes
@@ -92,32 +97,72 @@ def _spin_F_library(Q, U, theta, phi, spin):
     return fourier2spinsph(spinsph_analysis(z, spin), spin)
 
 
-def _spin_F_hp2sph(Q, U, spin):
+ALIAS_TOL = 1e-2  # see ``_spin_F_hp2sph``
+ALIAS_RTOL = 1e-7
+CG_MAXITER = 20000  # a safety cap only; rtol stops it in O(100) iterations
+
+
+def _spin_F_hp2sph(Q, U, spin, alias="fold", alias_tol=ALIAS_TOL, rtol=ALIAS_RTOL):
     """Hand-rolled HP2SPH analysis -> spin-SH ``F`` array (no resampling).
 
-    The latitude fit is masked (``dfs_mode_mask``): the innermost polar rings do not
-    resolve ``|m| = |spin|``, which for a spin field is exactly where the field is O(1)
-    at the pole, so those entries are dropped as missing rather than asserted to be
-    zero. Without the mask the ``|m| = |spin|`` columns are wrong by 15-50%.
+    ``alias`` selects how the latitude fit treats the polar rings, which cannot resolve
+    every longitude mode:
+
+    * ``"fold"`` (default) -- ``dfs_fold_plan``: model the ring's ALIAS SUM exactly and
+      keep the "unresolved mode = 0" assertion wherever the spin envelope says the mode
+      is negligible there (below ``alias_tol``). Full rank, so plain CG solves it, in
+      O(100) iterations.
+    * ``"mask"`` -- the previous behaviour: ``dfs_mode_mask`` drops every unresolved
+      entry, which is rank deficient and needs LSMR's minimum-norm solution.
+
+    The fold is faster AND more accurate than the mask, so there is no trade to make
+    between them. Measured at nside 64, seed 0, slope 1.5, relative ``C_l^EE`` error:
+
+        route                     median     top band   l=124..128     t[s]
+        mask                    1.70e-05     2.12e-04     4.03e-03     3.00
+        fold, defaults          2.12e-06     9.63e-06     1.18e-05     1.46
+
+    ``alias_tol`` and ``rtol`` trade accuracy against cost, and they interact: a smaller
+    ``alias_tol`` relaxes more assertions, which models the field better but frees more
+    directions for CG to resolve, so it needs a tighter ``rtol`` to pay off at all
+    (``alias_tol=1e-4`` at ``rtol=1e-6`` is WORSE than the defaults and 4x dearer). The
+    accurate end of the range is ``alias_tol=1e-3, rtol=1e-8``: band-edge 3.8e-6 (1000x
+    better than the mask) for 9.9 s, i.e. 3.3x the mask's cost.
     """
     z = Q + 1j * U if spin > 0 else Q - 1j * U
     nside = hp.npix2nside(np.asarray(z).shape[0])
     upsampled, fft_coeff = transform_healpix_to_grid(z)
     _, dfs = DFS(upsampled, fft_coeff, spin=spin)
-    fft_lat = apply_nuFFT(dfs, solver="lsmr", sample_mask=dfs_mode_mask(nside))
+    if alias == "fold":
+        target, phase, keep = dfs_fold_plan(nside, spin, alias_tol)
+        fft_lat = apply_nuFFT(
+            dfs,
+            solver="cg",
+            sample_mask=keep,
+            fold=(target, phase),
+            rtol=rtol,
+            maxiter=CG_MAXITER,
+        )
+    elif alias == "mask":
+        fft_lat = apply_nuFFT(dfs, solver="lsmr", sample_mask=dfs_mode_mask(nside))
+    else:
+        raise ValueError(f"unknown alias {alias!r}; use 'fold' or 'mask'")
     return FSHT_spin(fft_lat, spin)
 
 
-def forward_spin(Q, U, lmax, analysis="hp2sph"):
+def forward_spin(Q, U, lmax, analysis="hp2sph", **kw):
     """HEALPix ``(Q, U)`` polarization map -> healpy-ordered ``(aE, aB)``.
 
     ``analysis`` selects the grid->coefficients route (see the module docstring):
     ``"hp2sph"`` (default, the hand-rolled DFS+nuFFT, no resampling) or ``"library"``
-    (resample + the library's exact analysis, resampling-limited).
+    (resample + the library's exact analysis, resampling-limited). Extra keywords go to
+    ``_spin_F_hp2sph`` (``alias``, ``alias_tol``, ``rtol``).
     """
     Q = np.asarray(Q)
     U = np.asarray(U)
     if analysis == "library":
+        if kw:
+            raise TypeError(f"unexpected keywords for analysis='library': {sorted(kw)}")
         _, _, theta, phi = _equiangular_grid(lmax)
         Fp = _spin_F_library(Q, U, theta, phi, +SPIN)
         Fm = _spin_F_library(Q, U, theta, phi, -SPIN)
@@ -127,8 +172,8 @@ def forward_spin(Q, U, lmax, analysis="hp2sph"):
             Fp, Fm, lmax, scale=1.0, colat_phase=False, real_sh_norm=False
         )
     elif analysis == "hp2sph":
-        Fp = _spin_F_hp2sph(Q, U, +SPIN)
-        Fm = _spin_F_hp2sph(Q, U, -SPIN)
+        Fp = _spin_F_hp2sph(Q, U, +SPIN, **kw)
+        Fm = _spin_F_hp2sph(Q, U, -SPIN, **kw)
         # FSHT_spin already converted the pipeline conventions away (FSHT.
         # spin_g_to_library), so this is the same decode the library route uses.
         return spin_to_EB(

@@ -90,23 +90,29 @@ Each direction has two routes — `forward_spin(analysis=...)` and `backward_spi
 The single `ℓ = m = lmax` coefficient at `lmax = 2·nside` is the grid's longitude Nyquist and cannot be represented; use `lmax ≤ 2·nside - 1` if it matters.
 `lmax > 2·nside` raises `ValueError`.
 
-Measured against healpy `map2alm_spin`, median per-`ℓ` `C_ℓ` error over `2 ≤ ℓ ≤ lmax-2`, with `lmax = 2·nside` and a random `(aE, aB)` sky:
+The forward models the polar-ring longitude alias explicitly (`forward_spin(alias="fold")`, the default).
+A HEALPix ring of `npix` pixels measures the whole alias family of a mode, not the mode itself, and for a spin-2 field the modes near `|m| = 2` are O(1) at a pole, so the zero-padding misattributed them.
+`alias="mask"` restores the previous route, which dropped those entries instead.
 
-| nside | lmax | HP2SPH `EE` | healpy `EE` | HP2SPH `BB` | healpy `BB` |
-|---|---|---|---|---|---|
-| 8 | 16 | 1.4e-3 | 5.2e-3 | 2.1e-3 | 4.3e-3 |
-| 16 | 32 | 1.3e-4 | 1.7e-3 | 2.7e-4 | 1.5e-3 |
-| 32 | 64 | 1.0e-4 | 4.0e-4 | 7.7e-5 | 4.1e-4 |
-| 64 | 128 | 3.3e-5 | 1.6e-4 | 2.6e-5 | 2.1e-4 |
+RMS relative `C_ℓ^EE` error over the top band `3·lmax/4 ≤ ℓ ≤ 7·lmax/8`, with `lmax = 2·nside` and a smooth band-limited `(aE, aB)` sky (`slope 1.5`, median of 3 seeds):
 
-Reproduce with `tests/test_spin_paper_accuracy.py`; the backward accuracy is pinned in `tests/test_spin_backward.py`.
+| nside | HP2SPH (fold) | HP2SPH (mask) | healpy ring weights | healpy `map2alm_spin` |
+|---|---|---|---|---|
+| 8 | 1.52e-4 | 5.52e-3 | 2.04e-3 | 8.48e-3 |
+| 16 | 6.05e-5 | 1.06e-3 | 1.85e-3 | 3.85e-3 |
+| 32 | 2.68e-5 | 3.28e-4 | 6.27e-4 | 1.28e-3 |
+| 64 | 9.63e-6 | 1.49e-4 | 2.77e-4 | 1.30e-3 |
+| 128 | 3.56e-6 | 5.55e-5 | 9.68e-5 | 5.68e-4 |
+
+The fold is also about twice as fast as the mask, because the system is full rank again and plain CG replaces LSMR.
+Reproduce with `tests/test_alias_fold.py` and `tests/test_spin_paper_accuracy.py`; the backward accuracy is pinned in `tests/test_spin_backward.py`.
 
 The individual pipeline stages are exposed in the `src` package (`transform_healpix_to_grid`, `DFS`, `apply_nuFFT`, `FSHT`, and their inverses).
 
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest    # full suite (201 tests)
+PYTHONPATH=. python -m pytest    # full suite (231 tests)
 python -m pytest -m "not ft"     # skip tests that need libfasttransforms
 ```
 

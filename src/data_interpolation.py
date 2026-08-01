@@ -5,6 +5,7 @@ import jax
 import jax_healpy as jhp
 
 from functools import partial
+from scipy.special import gammaln
 
 
 def get_ring_indices(nside: int) -> jnp.array:
@@ -80,6 +81,113 @@ def ring_mode_mask(nside: int) -> np.array:
     m = np.abs(np.fft.fftfreq(n_lon) * n_lon)
     resolved = m[None, :] < (sizes // 2)[:, None]
     return resolved | (sizes == n_lon)[:, None]
+
+
+def ring_alias_target(nside: int) -> (np.array, np.array, np.array):
+    """Where each longitude mode is actually MEASURED on each ring.
+
+    A ring of ``npix`` pixels samples the longitude field at ``npix`` points, so it does
+    not measure mode ``m``: it measures the whole alias family of ``m``. Writing
+    ``b = m mod npix`` folded into ``[-npix//2, npix//2)``, what
+    ``transform_healpix_to_grid`` puts in slot ``b`` of ring ``r`` is
+
+        M[r, b] = sum over {m : m == b (mod npix)} of c_m(theta_r) exp(i (m - b) phi0_r)
+
+    -- the exponential because the phi=0 referencing at the end of that function
+    multiplies each slot by ``exp(-i b phi0)``, using the SLOT index rather than the mode
+    that contributed, so an aliased contribution also arrives with the wrong longitude
+    phase. Verified against the pipeline to ~1e-12 against O(10) coefficients.
+
+    The pipeline then asserts ``M[r, b] = c_b(theta_r)``, which is false whenever another
+    member of the family carries amplitude. This is the analysis-side mirror of the
+    synthesis-side fold in ``transform_grid_to_healpix.process_polar_ring``.
+
+    Returns ``(target, phase, resolved)``, each ``(n_rings, 4*nside)`` in NATURAL
+    (fftshifted) longitude order -- column ``j`` is mode ``m = j - 2*nside``, the order
+    ``DFS`` and ``apply_nuFFT`` use:
+
+    * ``target[r, j]`` -- the slot mode ``j`` folds onto,
+    * ``phase[r, j]``  -- the ``exp(i (m - b) phi0)`` it arrives with,
+    * ``resolved[r, j]`` -- whether the ring produces slot ``j`` at all. The Nyquist slot
+      ``-npix//2`` counts as produced: under the fold it is a genuine constraint on the
+      ``+-npix//2`` sum, not the mis-assignment ``ring_mode_mask`` has to drop.
+    """
+    sizes = ring_pixel_counts(nside)
+    n_lon = 4 * nside
+    phi0 = ring_first_longitude(nside)
+    m = np.arange(n_lon) - n_lon // 2
+    mid = (sizes // 2)[:, None]
+    b = (m[None, :] + mid) % sizes[:, None] - mid
+    target = b + n_lon // 2
+    phase = np.exp(1j * (m[None, :] - b) * phi0[:, None])
+    j = np.arange(n_lon)[None, :]
+    resolved = (j >= n_lon // 2 - mid) & (j < n_lon // 2 + mid)
+    return target, phase, resolved
+
+
+def mode_pole_envelope(nside: int, spin: int = 0, lmax: int = None) -> np.array:
+    """Largest ``|c_m(theta_r)|`` a band-limited spin-s field can carry, as a fraction of
+    that mode's own peak over latitude.
+
+    A spin-s mode-m latitude profile is the Wigner d function ``d^l_{-s,m}``, i.e.
+    ``sin^|m+s|(theta/2) cos^|m-s|(theta/2) P^(|m-s|,|m+s|)(cos theta)``. Near a pole the
+    polynomial is NOT O(1): the uniform asymptotic is Bessel, ``J_a(l*theta)`` with
+    ``a = |m+s|`` at the north pole and ``a = |m-s|`` at the south, so for a small
+    argument the amplitude is ``(l*theta/2)^a / a!`` -- THE SCALE IS ``l*theta``, NOT
+    ``theta``. Dropping the ``l`` factor underestimates by six orders at the band edge
+    (measured at nside 32, l = 63, m = +2: the innermost ring carries 1.6e-2 of the
+    mode's peak; ``(theta/2)^4`` predicts 2.6e-8, ``(l*theta/2)^4/4!`` predicts 1.7e-2).
+
+    ``lmax`` defaults to the pipeline band ``2*nside``, i.e. the worst case over the band.
+    """
+    if lmax is None:
+        lmax = 2 * nside
+    theta = np.deg2rad(90.0 - create_latitude_array(nside))[:, None]
+    n_lon = 4 * nside
+    m = np.arange(n_lon) - n_lon // 2
+    a = np.abs(m + spin).astype(float)[None, :]
+    b = np.abs(m - spin).astype(float)[None, :]
+    log_north = np.log(np.maximum(lmax * theta / 2, np.finfo(float).tiny))
+    log_south = np.log(np.maximum(lmax * (np.pi - theta) / 2, np.finfo(float).tiny))
+    north = np.exp(np.minimum(a * log_north - gammaln(a + 1), 0.0))
+    south = np.exp(np.minimum(b * log_south - gammaln(b + 1), 0.0))
+    return np.minimum(north, south)
+
+
+def ring_fold_plan(
+    nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None
+) -> (np.array, np.array, np.array):
+    """The forward latitude operator's longitude layout: fold + selective zero-assertion.
+
+    The zero-padding the pipeline does today is exactly equivalent to "fold, AND assert
+    ``c_m(theta_r) = 0`` for every mode the ring does not resolve" -- when the other
+    members of an alias family vanish the fold degenerates to the identity. Those zero
+    assertions are not a bug, they are what makes the latitude least squares WELL
+    CONDITIONED. Dropping them all (which is what ``ring_mode_mask`` does, and what
+    folding without them would do) leaves the polar caps constrained only through the
+    alias sums: the system stays consistent -- the true solution satisfies it to ~7e-13 --
+    but becomes so ill conditioned that LSMR is still 10% off after 40000 iterations.
+
+    Almost all of the assertions are true to many digits, because an unresolved mode is
+    negligible on a polar ring unless it decays slowly into the nearby pole, which happens
+    only for ``|m|`` near ``|spin|``. So keep the assertion where ``mode_pole_envelope``
+    says the mode is below ``tol``, RELAX it where it is not, and FOLD so the retained
+    data equations account exactly for the relaxed content aliasing into them.
+
+    Returns ``(target, phase, keep)``. ``keep[r, j]`` False marks an entry dropped from
+    the fit -- an unresolved mode with non-negligible amplitude there; its content is
+    still carried onto the ring's own bin by ``target``/``phase``. A trusted unresolved
+    mode is its own target, so it asserts ``c_m = 0`` in place (the data is already 0
+    there, from the zero-padding).
+
+    With an empty relax set this is the identity, i.e. the current unmasked path
+    bit-for-bit.
+    """
+    target, phase, resolved = ring_alias_target(nside)
+    relax = (~resolved) & (mode_pole_envelope(nside, spin, lmax) > tol)
+    trusted = (~resolved) & ~relax
+    j = np.broadcast_to(np.arange(target.shape[1]), target.shape)
+    return np.where(trusted, j, target), np.where(trusted, 1.0, phase), ~relax
 
 
 def ring_first_longitude(nside: int) -> np.array:

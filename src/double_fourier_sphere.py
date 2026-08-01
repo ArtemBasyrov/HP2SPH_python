@@ -2,7 +2,11 @@ import numpy as np
 import jax.numpy as jnp
 import healpy as hp
 
-from .data_interpolation import create_latitude_array, ring_mode_mask
+from .data_interpolation import (
+    create_latitude_array,
+    ring_fold_plan,
+    ring_mode_mask,
+)
 
 # Number of HEALPix rings on EACH side of a pole used to extrapolate the (unsampled)
 # pole-ring value. Capped at the polar-cap size (nside-1) so the stencil never
@@ -129,6 +133,46 @@ def dfs_mode_mask(nside: int) -> np.ndarray:
         (pole[None, :], mask, pole[None, :], np.flip(mask, axis=0)), axis=0
     )
     return np.fft.fftshift(doubled, axes=1)
+
+
+def dfs_fold_plan(
+    nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None
+) -> (np.ndarray, np.ndarray, np.ndarray):
+    """``data_interpolation.ring_fold_plan`` in the row layout ``DFS`` returns.
+
+    Same rows as ``interpolate_polar_rings``/``_upsampled_latitudes``
+    (``[north pole, rings, south pole, mirrored rings]``) and the same natural
+    (fftshifted) longitude order, so ``(target, phase)`` can be handed straight to
+    ``nuFFT.apply_nuFFT(fold=...)`` and ``keep`` to its ``sample_mask``.
+
+    A mirrored row reuses its original's plan: the DFS sign flip is ``(-1)^(m+spin)`` and
+    every ring size is even, so ``m == b (mod npix)`` implies ``(-1)^m == (-1)^b`` and the
+    sign commutes with the fold.
+
+    A pole row is data only in the weak sense that it is a Lagrange extrapolation of the
+    ring rows, so it inherits their aliasing: a relaxed mode is both MISSING from its own
+    pole slot (the measurement zero-padded it) and PRESENT in the slot it folds onto. Both
+    of those pole slots are dropped. That is far less restrictive than ``dfs_mode_mask``,
+    which keeps only ``|m| <= 1`` there.
+    """
+    target, phase, keep = ring_fold_plan(nside, spin, tol, lmax)
+    n_rings, n_lon = target.shape
+    ident = np.arange(n_lon)[None, :]
+
+    pole_keep = np.ones((2, n_lon), dtype=bool)
+    npts = max(2, min(POLE_INTERP_NPTS, nside - 1))
+    for i, rings in enumerate((np.arange(npts), np.arange(n_rings - npts, n_rings))):
+        relaxed = ~keep[rings]
+        pole_keep[i, np.unique(np.nonzero(relaxed)[1])] = False
+        pole_keep[i, np.unique(target[rings][relaxed])] = False
+
+    return (
+        np.concatenate((ident, target, ident, np.flip(target, axis=0))),
+        np.concatenate(
+            (np.ones((1, n_lon)), phase, np.ones((1, n_lon)), np.flip(phase, axis=0))
+        ),
+        np.concatenate((pole_keep[:1], keep, pole_keep[1:], np.flip(keep, axis=0))),
+    )
 
 
 def _pole_lagrange_weights(nodes: np.ndarray, x0: float) -> np.ndarray:

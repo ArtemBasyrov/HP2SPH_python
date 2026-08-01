@@ -152,8 +152,53 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
     return f_hat, 0
 
 
+def _fold_ops(fold, n_trans, M_samples):
+    """(apply, adjoint) for the polar-ring longitude alias, or ``(None, None)``.
+
+    ``fold`` is the ``(target, phase)`` pair from
+    ``double_fourier_sphere.dfs_fold_plan``, both ``(M_samples, n_trans)``. ``apply``
+    turns the model's wide-band longitude spectrum at each latitude into what the
+    HEALPix ring at that latitude actually measures -- a scatter-add over alias
+    families -- and ``adjoint`` is the matching gather, so the pair is an exact adjoint
+    (checked to 1.6e-15) and LSMR/CG stay valid.
+
+    Both work on the ``(n_trans, M_samples)`` layout the solvers use. ``np.bincount`` (not
+    ``np.add.at``) does the scatter: same result, ~10x faster.
+    """
+    if fold is None:
+        return None, None
+    target = np.asarray(fold[0])
+    phase = np.asarray(fold[1])
+    if target.shape != (M_samples, n_trans) or phase.shape != target.shape:
+        raise ValueError(
+            f"fold arrays must be ({M_samples}, {n_trans}), got {target.shape}"
+        )
+    flat = (target + n_trans * np.arange(M_samples)[:, None]).ravel()
+    conj_phase = np.conj(phase)
+    size = M_samples * n_trans
+
+    def apply(model):
+        t = (model.T * phase).ravel()
+        folded = np.bincount(flat, weights=t.real, minlength=size).astype(complex)
+        folded += 1j * np.bincount(flat, weights=t.imag, minlength=size)
+        return folded.reshape(M_samples, n_trans).T
+
+    def adjoint(residual):
+        gathered = residual.T.ravel()[flat].reshape(M_samples, n_trans)
+        return (gathered * conj_phase).T
+
+    return apply, adjoint
+
+
 def lsmr_nufft_forward(
-    x, f_samples, N_modes=None, sample_mask=None, rtol=1e-9, maxiter=None, eps=1e-12
+    x,
+    f_samples,
+    N_modes=None,
+    sample_mask=None,
+    rtol=1e-9,
+    maxiter=None,
+    eps=1e-12,
+    fold=None,
 ):
     """Latitude analysis via LSMR on the least-squares problem itself.
 
@@ -198,18 +243,23 @@ def lsmr_nufft_forward(
             )
         sw = sw * np.sqrt(mask)  # zero rows drop out of the least squares entirely
 
+    fold_apply, fold_adjoint = _fold_ops(fold, n_trans, M_samples)
+
     def matvec(f_hat_vec):
         out = np.zeros((n_trans, M_samples), dtype=np.complex128)
         plan_forward.execute(
             np.ascontiguousarray(f_hat_vec.reshape(n_trans, N_modes)), out
         )
+        if fold_apply is not None:
+            out = fold_apply(out)
         return (sw * out).ravel()
 
     def rmatvec(res_vec):
         out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(
-            np.ascontiguousarray(sw * res_vec.reshape(n_trans, M_samples)), out
-        )
+        weighted = sw * res_vec.reshape(n_trans, M_samples)
+        if fold_adjoint is not None:
+            weighted = fold_adjoint(weighted)
+        plan_adjoint.execute(np.ascontiguousarray(weighted), out)
         return out.ravel()
 
     B = LinearOperator(
@@ -226,7 +276,14 @@ def lsmr_nufft_forward(
 
 
 def cg_nufft_forward(
-    x, f_samples, N_modes=None, rtol=1e-9, maxiter=200, eps=1e-12, sample_mask=None
+    x,
+    f_samples,
+    N_modes=None,
+    rtol=1e-9,
+    maxiter=200,
+    eps=1e-12,
+    sample_mask=None,
+    fold=None,
 ):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
@@ -266,7 +323,12 @@ def cg_nufft_forward(
             )
         weights = weights[None, :] * mask
         norm = weights.sum(axis=1, keepdims=True)
-        if np.any(norm == 0):
+        if fold is not None:
+            # A per-column norm is a per-block scaling. That keeps A^H W A Hermitian only
+            # while the blocks are independent; the fold couples them, so scaling row
+            # block j alone would break the symmetry CG requires. Use a scalar.
+            norm = norm.mean()
+        elif np.any(norm == 0):
             raise ValueError("sample_mask leaves a longitude mode with no samples")
 
     # Reshape helpers
@@ -279,28 +341,30 @@ def cg_nufft_forward(
     def mat_to_vec(mat):
         return mat.ravel()
 
+    fold_apply, fold_adjoint = _fold_ops(fold, n_trans, M_samples)
+
     # Define NUFFT operators with batch processing
     def forward_op(f_hat_vec):
         """A @ f_hat for all transforms (batched)"""
         f_hat_mat = vec_to_mat_hat(f_hat_vec)
         out = np.zeros((n_trans, M_samples), dtype=np.complex128)
         plan_forward.execute(f_hat_mat, out)
+        if fold_apply is not None:
+            out = fold_apply(out)
         return mat_to_vec(out)
+
+    def calc_rhs(f_sample_init):
+        """A^H @ f_samples for all transforms (batched)"""
+        weighted_samples = f_sample_init * weights
+        if fold_adjoint is not None:
+            weighted_samples = fold_adjoint(weighted_samples)
+        out = np.zeros((n_trans, N_modes), dtype=np.complex128)
+        plan_adjoint.execute(np.ascontiguousarray(weighted_samples), out)
+        return mat_to_vec(out / norm)
 
     def adjoint_op(f_samples_vec):
         """A^H @ f_samples for all transforms (batched)"""
-        f_samples_mat = vec_to_mat_samples(f_samples_vec)
-        weighted_samples = f_samples_mat * weights
-        out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(weighted_samples, out)
-        return mat_to_vec(out / norm)
-
-    def calc_rhs(f_sample_init):
-        """A^H @ f_samples for all transforms (batched) initial"""
-        weighted_samples_init = f_sample_init * weights
-        out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        plan_adjoint.execute(weighted_samples_init, out)
-        return mat_to_vec(out / norm)
+        return calc_rhs(vec_to_mat_samples(f_samples_vec))
 
     # Solve (A^H A) f_hat = A^H f_samples using CG (batched)
     def apply_AHA(f_hat_vec):
@@ -403,6 +467,7 @@ def apply_nuFFT(
     eps: float = 1e-12,
     rcond: float = 1e-13,
     sample_mask=None,
+    fold=None,
 ) -> jnp.array:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
@@ -431,12 +496,19 @@ def apply_nuFFT(
       Vandermonde. O(nside^3) one-off factorisation; needed only for the
       ill-conditioned square band, where it reaches ~1e-6 round trip up to nside 64.
 
-    ``sample_mask`` (optional, ``cg`` only) marks which (latitude sample, longitude
+    ``sample_mask`` (not available with ``svd``) marks which (latitude sample, longitude
     mode) entries the HEALPix grid actually resolved -- see
-    ``double_fourier_sphere.dfs_mode_mask``. Masked entries get zero weight, so they are
-    treated as MISSING instead of zero. This matters only where a mode carries real
-    amplitude on a ring too coarse to sample it, i.e. ``|m| = |spin|`` on the innermost
-    polar rings of a SPIN field; the scalar path is unaffected and defaults to ``None``.
+    ``double_fourier_sphere.dfs_mode_mask`` / ``dfs_fold_plan``. Masked entries get zero
+    weight, so they are treated as MISSING instead of zero. This matters only where a mode
+    carries real amplitude on a ring too coarse to sample it, i.e. ``|m|`` near ``|spin|``
+    on the innermost polar rings of a SPIN field; the scalar path is unaffected and
+    defaults to ``None``.
+
+    ``fold`` is the ``(target, phase)`` pair from ``dfs_fold_plan``, which makes the
+    forward operator model what a coarse HEALPix ring actually measures -- the ALIAS SUM
+    over each longitude mode's residue family -- instead of asserting that the ring
+    measured each mode separately. Use it together with that function's ``keep`` as the
+    ``sample_mask``; the two are one plan and are not meaningful apart.
 
     ``N_modes`` is the latitude band handed to the FSHT (-> L = (N_modes-1)//2).
     It defaults to ``solve_modes``, i.e. the FSHT runs at the natural band L = lmax =
@@ -462,6 +534,11 @@ def apply_nuFFT(
     DFT_upsampled_lat = _upsampled_latitudes(nside)
 
     if solver == "svd":
+        if fold is not None:
+            raise NotImplementedError(
+                "the alias fold couples the longitude columns; the SVD path factorizes "
+                "one shared per-column Vandermonde. Use solver='cg' or 'lsmr'."
+            )
         if sample_mask is not None:
             raise NotImplementedError(
                 "sample_mask needs a per-column solve; the SVD path shares one cached "
@@ -479,6 +556,7 @@ def apply_nuFFT(
             rtol=rtol,
             maxiter=maxiter if maxiter != 200 else None,
             eps=eps,
+            fold=fold,
         )
         if info != 0:
             print(f"LSMR did not converge (istop={info})!")
@@ -491,6 +569,7 @@ def apply_nuFFT(
             maxiter=maxiter,
             eps=eps,
             sample_mask=sample_mask,
+            fold=fold,
         )
         if info != 0:
             print("CG solver didn't converge!")
