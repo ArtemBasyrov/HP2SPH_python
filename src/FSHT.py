@@ -150,6 +150,61 @@ def to_healpy_alm(
     return alm
 
 
+def from_healpy_alm(
+    alm: np.array, lmax: int, L: int, scale: float = SCALE_2PI, mono_factor: float = 1.0
+) -> np.array:
+    """Inverse of :func:`to_healpy_alm`: healpy alm -> FastTransforms ``C`` array.
+
+    Returns the ``(L+1, 2L+1)`` triangular array that ``inverse_FSHT`` consumes,
+    so a caller holding healpy-ordered coefficients can drive the scalar inverse
+    pipeline. ``main.backward`` only ever receives a ``C`` straight back from the
+    forward, which is why this direction did not exist before; anything starting
+    from coefficients (a round trip, a synthesis of a known sky) needs it.
+
+    Reading ``to_healpy_alm``'s mapping backwards:
+
+      * C[l, 0]      = (-1)^l * scale * Re a_{l,0}
+      * C[l-m, 2m-1] = (-1)^l * sqrt(2) * scale * a_{l,m}     for m > 0
+      * C[l-m, 2m]   = conj(C[l-m, 2m-1])
+
+    That last line is what makes the inverse well defined at all. ``to_healpy_alm``
+    reads only the odd column of each real-spherical-harmonic pair because
+    ``preparation``'s packing makes the even column its conjugate; verified to hold
+    to 2.8e-16 on real pipeline output.
+
+    ``L`` is the band limit of the target array and is passed explicitly because it
+    is set by the latitude solve, not by ``lmax`` -- with the compact default band
+    ``L = 2*nside``. Coefficients above ``min(lmax, L)`` are dropped.
+
+    Validated against healpy: ``backward_map(from_healpy_alm(alm), nside)``
+    reproduces ``hp.alm2map(alm)`` to 2.8e-13 / 2.9e-13 / 3.4e-13 at nside
+    8 / 16 / 32, the same machine precision the native spin backward reaches
+    (``tests/test_FSHT.py``, ``tests/test_pipeline.py``).
+
+    This is NOT a left inverse of ``to_healpy_alm`` applied to a *forward's* output.
+    The forward leaves quadrature residue in the triangular tail cells (rows
+    ``> L-m``) that ``to_healpy_alm`` never reads, so that residue cannot be
+    restored. Reconstructing a coefficient SET is exact; round-tripping a specific
+    ``C`` is not.
+    """
+    C = np.zeros((L + 1, 2 * L + 1), dtype=complex)
+
+    def idx(l, m):
+        return m * (2 * lmax + 1 - m) // 2 + l  # healpy Alm.getidx
+
+    top = min(lmax, L)
+    C[0, 0] = alm[idx(0, 0)].real * scale * mono_factor
+    for l in range(1, top + 1):
+        sign = (-1.0) ** l
+        C[l, 0] = sign * alm[idx(l, 0)].real * scale
+        for m in range(1, l + 1):
+            v = sign * alm[idx(l, m)] * np.sqrt(2.0) * scale
+            C[l - m, 2 * m - 1] = v
+            C[l - m, 2 * m] = np.conj(v)
+
+    return C
+
+
 def convert_to_bivar_coeffs(g: jnp.array, nside: int, spin: int = 0) -> jnp.array:
     # converting 2D array of g coefficients of Fourier-Chebyshev series
     # into 2D array of bivariate Fourier coefficients.

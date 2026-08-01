@@ -5,6 +5,7 @@ Tests that actually run ``fourier2sph`` / ``sph2fourier`` need the C library and
 are marked ``ft`` so they can be skipped with ``-m "not ft"``.
 """
 
+import numpy as np
 import pytest
 
 # The FSHT module loads the C library on import; skip cleanly if it is missing.
@@ -18,6 +19,8 @@ from src.FSHT import (  # noqa: E402
     convert_to_bivar_coeffs,
     FSHT,
     inverse_FSHT,
+    to_healpy_alm,
+    from_healpy_alm,
 )
 
 
@@ -68,3 +71,31 @@ def test_fsht_inverse_roundtrip(nside, healpix_map, relerr):
     _, bivar = inverse_FSHT(C, nside)
     C_back = FSHT(bivar)
     assert relerr(C_back, C) < 1e-9
+
+
+def test_from_healpy_alm_inverts_to_healpy_alm(nside, lmax, random_alm, relerr):
+    """``to_healpy_alm(from_healpy_alm(a)) == a`` on the represented subspace.
+
+    The composition in THIS order is an identity, because ``from_healpy_alm``
+    writes exactly the cells ``to_healpy_alm`` reads. The other order is not:
+    a forward-produced ``C`` carries quadrature residue in the triangular tail
+    that ``to_healpy_alm`` discards and nothing can restore, which is why the
+    round-trip benchmark measures those two orders separately.
+    """
+    L = 2 * nside
+    C = from_healpy_alm(random_alm, lmax=lmax, L=L)
+    assert C.shape == (L + 1, 2 * L + 1)
+    assert relerr(to_healpy_alm(C, lmax=lmax), random_alm) < 1e-13
+
+
+def test_from_healpy_alm_fills_the_conjugate_column(nside, lmax, random_alm):
+    """Column ``2m`` must be the conjugate of ``2m-1``, matching ``preparation``.
+
+    ``to_healpy_alm`` reads only the odd column of each real-spherical-harmonic
+    pair on the grounds that the even one is its conjugate. If this direction did
+    not honour that, the array would be a valid input to ``to_healpy_alm`` and an
+    invalid one to ``sph2fourier``, and only the synthesis would notice.
+    """
+    C = from_healpy_alm(random_alm, lmax=lmax, L=2 * nside)
+    for m in range(1, lmax + 1):
+        assert np.allclose(C[:, 2 * m], np.conj(C[:, 2 * m - 1]), atol=0, rtol=0)

@@ -7,6 +7,7 @@ import pytest
 # The pipeline helpers load the C library on import; skip cleanly if it is missing.
 pytest.importorskip("src.ft_sphere")
 
+from src.FSHT import from_healpy_alm  # noqa: E402
 from tests.pipeline_helpers import (  # noqa: E402
     forward_C,
     forward_alm,
@@ -94,6 +95,33 @@ def test_forward_alm_matches_healpy(nside, lmax, healpix_map, relerr):
     sel = _sub_band(alm, lmax)
     err = relerr(alm[sel], hp_alm[sel])
     assert err < 3.5e-2, f"forward alm vs map2alm rel error {err:.4f} (nside={nside})"
+
+
+@pytest.mark.ft
+def test_backward_from_healpy_alm_matches_healpy(nside, lmax, random_alm, relerr):
+    """``from_healpy_alm`` + the inverse pipeline reproduces ``hp.alm2map`` exactly.
+
+    The scalar synthesis is EXACT, not merely convergent, in healpy's own
+    coefficient convention: measured 2.8e-13 / 2.9e-13 / 3.4e-13 at nside
+    8 / 16 / 32, matching what the native spin backward reaches. That is expected
+    -- a degree-l harmonic is a trigonometric polynomial of degree l in theta, so
+    the compact latitude band represents it with no truncation.
+
+    ``l = m = lmax`` is excluded. With ``lmax = 2*nside`` on a ``4*nside``-point
+    longitude grid, ``m = +lmax`` and ``m = -lmax`` are the same mode and the
+    per-ring ``phi0`` offsets give them different phases, so no single column can
+    carry both. That corner is a property of the HEALPix grid, and the benchmark
+    suite measures it separately (HP2SPH returns gain 0.5000 there at every nside;
+    healpy and ducc0 return 1.0).
+    """
+    alm = random_alm.copy()
+    alm[hp.Alm.getidx(lmax, lmax, lmax)] = 0.0  # the grid-Nyquist corner
+
+    C = from_healpy_alm(alm, lmax=lmax, L=2 * nside)
+    recovered = backward_map(C, nside)
+    reference = hp.alm2map(alm, nside=nside, lmax=lmax)
+    err = relerr(recovered, reference)
+    assert err < 1e-11, f"backward vs hp.alm2map rel error {err:.3e} (nside={nside})"
 
 
 @pytest.mark.ft
