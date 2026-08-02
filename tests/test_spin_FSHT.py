@@ -22,8 +22,10 @@ from src.FSHT import (
     preparation,
     convert_to_bivar_coeffs,
     spin_to_EB,
+    spin_to_EB_real,
     EB_to_spin_F,
     spin_alm_from_F,
+    spin_alm_from_conjugate_F,
     _spin_F_col,
 )
 
@@ -59,6 +61,47 @@ def test_EB_spin_algebra_roundtrip():
     almB = 1j * (a_plus - a_minus) / 2.0
     np.testing.assert_allclose(almE, aE, atol=1e-12)
     np.testing.assert_allclose(almB, aB, atol=1e-12)
+
+
+def test_conjugate_F_readout_matches_the_minus_spin_array():
+    """For a real (Q,U) sky the -2 coefficients are already inside the +2 F array.
+
+    Build BOTH spin F arrays from the same (aE, aB) with ``_build_spin_F`` -- the
+    exact convention ``_spin_F_hp2sph``'s output obeys -- and check that reading the
+    NEGATIVE orders of the +2 array reproduces the -2 array's own decode. This pins
+    ``-2a_{l,m} = (-1)^m conj(+2a_{l,-m})`` together with the signed-m column
+    (``_spin_F_col``) and phase (``_spin_conv_phase``) lookups it goes through, which
+    is what lets ``forward_spin`` drop the second analysis pass.
+    """
+    from src.spin_transform import _build_spin_F, _signed_spin_alm
+
+    lmax = 10
+    rng = np.random.default_rng(17)
+    n = hp.Alm.getsize(lmax)
+    aE = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    aB = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    m0 = np.array([hp.Alm.getidx(lmax, ell, 0) for ell in range(lmax + 1)])
+    aE[m0] = aE[m0].real  # a REAL (Q, U) sky -- the identity assumes nothing else
+    aB[m0] = aB[m0].real
+    for ell in (0, 1):  # a spin-2 field has no monopole or dipole
+        for m in range(ell + 1):
+            aE[hp.Alm.getidx(lmax, ell, m)] = 0
+            aB[hp.Alm.getidx(lmax, ell, m)] = 0
+
+    N, M = lmax + 1, 2 * lmax + 1
+    kw = dict(scale=1.0, colat_phase=False, real_sh_norm=False)
+    Fp = _build_spin_F(_signed_spin_alm(aE, aB, lmax, +2), lmax, N, M, +2)
+    Fm = _build_spin_F(_signed_spin_alm(aE, aB, lmax, -2), lmax, N, M, -2)
+
+    np.testing.assert_allclose(
+        spin_alm_from_conjugate_F(Fp, lmax, spin=+2, **kw),
+        spin_alm_from_F(Fm, lmax, spin=-2, **kw),
+        atol=1e-13,
+    )
+    # ... and the single-array decode still returns the sky it was built from
+    almE, almB = spin_to_EB_real(Fp, lmax, **kw)
+    np.testing.assert_allclose(almE, aE, atol=1e-13)
+    np.testing.assert_allclose(almB, aB, atol=1e-13)
 
 
 def _equiangular_grid(lmax):

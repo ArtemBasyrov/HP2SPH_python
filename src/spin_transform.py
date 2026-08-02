@@ -65,6 +65,7 @@ from .FSHT import (
     FSHT_spin,
     inverse_FSHT_spin,
     spin_to_EB,
+    spin_to_EB_real,
     _spin_F_col,
     _spin_conv_phase,
 )
@@ -72,7 +73,7 @@ from .data_interpolation import transform_healpix_to_grid, transform_grid_to_hea
 from .double_fourier_sphere import DFS, DFS_inverse, dfs_fold_plan
 from .nuFFT import apply_nuFFT, inverse_nuFFT
 
-SPIN = 2  # the polarization spin; the pipeline runs the +SPIN and -SPIN passes
+SPIN = 2  # the polarization spin; the native routes run the +SPIN pass only
 
 
 def _equiangular_grid(lmax):
@@ -142,6 +143,11 @@ def forward_spin(Q, U, lmax, analysis="hp2sph", **kw):
     ``"hp2sph"`` (default, the hand-rolled DFS+nuFFT, no resampling) or ``"library"``
     (resample + the library's exact analysis, resampling-limited). Extra keywords go to
     ``_spin_F_hp2sph`` (``alias_tol``, ``rtol``).
+
+    ``"hp2sph"`` runs the ``+2`` pass only: Q and U are real, so the ``-2``
+    coefficients follow from ``-2a_{l,m} = (-1)^m conj(+2a_{l,-m})`` and are read out
+    of the same ``F`` array (``FSHT.spin_to_EB_real``). ``"library"`` keeps both passes
+    as an independent cross-check of the decode.
     """
     Q = np.asarray(Q)
     U = np.asarray(U)
@@ -157,12 +163,16 @@ def forward_spin(Q, U, lmax, analysis="hp2sph", **kw):
             Fp, Fm, lmax, scale=1.0, colat_phase=False, real_sh_norm=False
         )
     elif analysis == "hp2sph":
+        if np.iscomplexobj(Q) or np.iscomplexobj(U):
+            raise ValueError(
+                "analysis='hp2sph' needs real Q and U (Stokes parameters); the "
+                "single-pass readout is derived from that reality"
+            )
         Fp = _spin_F_hp2sph(Q, U, +SPIN, **kw)
-        Fm = _spin_F_hp2sph(Q, U, -SPIN, **kw)
         # FSHT_spin already converted the pipeline conventions away (FSHT.
         # spin_g_to_library), so this is the same decode the library route uses.
-        return spin_to_EB(
-            Fp, Fm, lmax, scale=1.0, colat_phase=False, real_sh_norm=False
+        return spin_to_EB_real(
+            Fp, lmax, scale=1.0, colat_phase=False, real_sh_norm=False
         )
     raise ValueError(f"unknown analysis {analysis!r}; use 'library' or 'hp2sph'")
 

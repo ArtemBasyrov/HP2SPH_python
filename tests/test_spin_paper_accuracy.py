@@ -180,6 +180,36 @@ def test_spin_hp2sph_matches_healpy_full_sky():
         )
 
 
+def test_spin_hp2sph_single_pass_matches_the_two_pass_forward():
+    """``forward_spin`` runs the +2 analysis only; the -2 pass was redundant.
+
+    Q and U are real, so the -2 coefficients follow from the +2 ones by conjugation
+    (``FSHT.spin_alm_from_conjugate_F``) and a second analysis just recomputes them.
+    What separates the two is the latitude solver's own convergence noise, which must
+    stay well under the transform's error against the input sky -- otherwise the
+    dropped pass was carrying information after all.
+    """
+    from src.spin_transform import _spin_F_hp2sph
+    from src.FSHT import spin_to_EB
+
+    nside, lmax = 16, 24
+    aE, aB = _random_EB(lmax, seed=13)
+    Q, U = hp.alm2map_spin([aE, aB], nside, 2, lmax)
+
+    kw = dict(scale=1.0, colat_phase=False, real_sh_norm=False)
+    two = spin_to_EB(_spin_F_hp2sph(Q, U, +2), _spin_F_hp2sph(Q, U, -2), lmax, **kw)
+    one = forward_spin(Q, U, lmax, analysis="hp2sph")
+
+    for name, a1, a2, ref in (("E", one[0], two[0], aE), ("B", one[1], two[1], aB)):
+        gap = np.linalg.norm(a1 - a2) / np.linalg.norm(a2)
+        err = np.linalg.norm(a2 - ref) / np.linalg.norm(ref)
+        assert gap < err / 10, f"{name}: passes differ by {gap:.2e}, error {err:.2e}"
+
+    # the readout is only valid for real Stokes parameters, so complex input is refused
+    with pytest.raises(ValueError, match="real Q and U"):
+        forward_spin(Q.astype(complex), U, lmax, analysis="hp2sph")
+
+
 def test_spin_hp2sph_pure_E_stays_E():
     """A pure-E sky stays B-free through the hand-rolled route."""
     nside, lmax = 16, 24

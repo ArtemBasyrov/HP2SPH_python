@@ -465,6 +465,65 @@ def spin_alm_from_F(
     return alm
 
 
+def spin_alm_from_conjugate_F(
+    F: np.array,
+    lmax: int,
+    spin: int,
+    scale: float = SPIN_SCALE_2PI,
+    colat_phase: bool = True,
+    real_sh_norm: bool = True,
+) -> np.array:
+    """The ``-spin`` coefficients of a REAL ``(Q, U)`` field, from its ``+spin`` ``F``.
+
+    For real Q and U the two spin passes are not independent. With
+    ``z_s = Q + i s/|s| U`` and ``conj(_sY_lm) = (-1)^(s+m) _{-s}Y_{l,-m}``,
+
+        ``_{-s}a_{l,m} = (-1)^m conj(_{+s}a_{l,-m})`` ,
+
+    so the NEGATIVE-order columns of the ``+spin`` array already hold everything a
+    second ``-spin`` analysis would recompute. ``_spin_F_col`` and
+    ``_spin_conv_phase`` are both defined for signed ``m`` (the synthesis needs
+    them), so the readout is the same as :func:`spin_alm_from_F` with ``m -> -m``,
+    conjugated, times ``(-1)^m``.
+
+    Returns a healpy-ordered (``m >= 0``) array, like :func:`spin_alm_from_F`. The
+    identity holds exactly for the true coefficients; the two pipeline estimates
+    differ only by the latitude solver's own convergence noise (measured ~2e-7
+    relative at nside 32, three orders below the transform's accuracy).
+    """
+    F = np.asarray(F)
+    alm = np.zeros(((lmax + 1) * (lmax + 2)) // 2, dtype=complex)
+
+    def idx(l, m):
+        return m * (2 * lmax + 1 - m) // 2 + l  # healpy Alm.getidx
+
+    s0 = abs(spin)
+    sqrt2 = np.sqrt(2.0) if real_sh_norm else 1.0
+    for m in range(0, lmax + 1):
+        col = _spin_F_col(-m)  # the coefficient at order -m of the SUPPLIED spin
+        norm = scale if m == 0 else scale * sqrt2
+        # (-1)^m from the conjugation identity; the rest is spin_alm_from_F at -m.
+        phase_m = ((-1.0) ** m) * _spin_conv_phase(-m, spin)
+        for l in range(max(m, s0), lmax + 1):
+            row = l - max(m, s0)  # |-m| = m, so the row layout is unchanged
+            sign = phase_m * ((-1.0) ** l if colat_phase else 1.0)
+            # sign and norm are real, so conjugating only F is the same thing.
+            alm[idx(l, m)] = sign * np.conj(F[row, col]) / norm
+    return alm
+
+
+def _EB_from_spin_alm(a_plus: np.array, a_minus: np.array):
+    """The parity eigenmodes of a pair of spin coefficient arrays.
+
+    ``a^E = -(+2a + -2a)/2`` and ``a^B = +i(+2a - -2a)/2`` (the CMB convention; the
+    overall sign/normalization is matched to healpy's ``map2alm_spin`` in
+    tests/test_spin_FSHT.py).
+    """
+    almE = -(a_plus + a_minus) / 2.0
+    almB = 1j * (a_plus - a_minus) / 2.0
+    return almE, almB
+
+
 def spin_to_EB(
     F_plus: np.array,
     F_minus: np.array,
@@ -475,31 +534,38 @@ def spin_to_EB(
 ):
     """Combine the spin +2 and spin -2 ``F`` arrays into healpy E/B ``alm``.
 
-    With the spin coefficients
-    ``s_a = spin_alm_from_F(F_s, ...)`` the parity eigenmodes are
-    ``a^E = -(+2a + -2a)/2`` and ``a^B = +i(+2a - -2a)/2`` (the CMB convention; the
-    overall sign/normalization is pinned by ``scale`` and matched to healpy's
-    ``map2alm_spin`` in tests/test_spin_FSHT.py). Returns ``(almE, almB)``.
+    Decodes both arrays with :func:`spin_alm_from_F` and combines them with
+    :func:`_EB_from_spin_alm`. Returns ``(almE, almB)``.
+
+    This makes no reality assumption about the two passes; for a real ``(Q, U)`` map
+    :func:`spin_to_EB_real` gets the same answer from ``F_plus`` alone, at half the
+    analysis cost.
     """
-    a_plus = spin_alm_from_F(
-        F_plus,
-        lmax,
-        spin=2,
-        scale=scale,
-        colat_phase=colat_phase,
-        real_sh_norm=real_sh_norm,
-    )
-    a_minus = spin_alm_from_F(
-        F_minus,
-        lmax,
-        spin=-2,
-        scale=scale,
-        colat_phase=colat_phase,
-        real_sh_norm=real_sh_norm,
-    )
-    almE = -(a_plus + a_minus) / 2.0
-    almB = 1j * (a_plus - a_minus) / 2.0
-    return almE, almB
+    kw = dict(scale=scale, colat_phase=colat_phase, real_sh_norm=real_sh_norm)
+    a_plus = spin_alm_from_F(F_plus, lmax, spin=2, **kw)
+    a_minus = spin_alm_from_F(F_minus, lmax, spin=-2, **kw)
+    return _EB_from_spin_alm(a_plus, a_minus)
+
+
+def spin_to_EB_real(
+    F_plus: np.array,
+    lmax: int,
+    scale: float = SPIN_SCALE_2PI,
+    colat_phase: bool = True,
+    real_sh_norm: bool = True,
+):
+    """:func:`spin_to_EB` for a REAL ``(Q, U)`` map, from the ``+2`` pass alone.
+
+    ``z = Q + iU`` already carries the whole real ``(Q, U)`` pair, so the ``-2``
+    coefficients are fixed by reality rather than independent -- see
+    :func:`spin_alm_from_conjugate_F` for the identity. This is the analysis
+    counterpart of the single-pass native synthesis in
+    ``spin_transform._backward_spin_hp2sph``, and halves the forward's cost.
+    """
+    kw = dict(scale=scale, colat_phase=colat_phase, real_sh_norm=real_sh_norm)
+    a_plus = spin_alm_from_F(F_plus, lmax, spin=2, **kw)
+    a_minus = spin_alm_from_conjugate_F(F_plus, lmax, spin=2, **kw)
+    return _EB_from_spin_alm(a_plus, a_minus)
 
 
 def EB_to_spin_F(almE: np.array, almB: np.array, lmax: int):
