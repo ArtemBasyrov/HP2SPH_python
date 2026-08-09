@@ -146,3 +146,32 @@ def test_forward_alm_converges_with_nside(relerr):
         sel = _sub_band(alm, lmax)
         errs.append(relerr(alm[sel], alm_in[sel]))
     assert errs[1] < errs[0], f"no convergence: ns4={errs[0]:.4f} ns16={errs[1]:.4f}"
+
+
+# --------------------------------------------------------------------------- #
+# main.py's public entry points                                                #
+# --------------------------------------------------------------------------- #
+# ``main.forward`` used to demand a 3-row (I, Q, U) stack and transform only I,
+# which is why the benchmarks bypassed it and imported the composition out of
+# ``tests/`` instead. It now takes a single map and delegates to ``src.pipeline``.
+@pytest.mark.ft
+def test_main_forward_is_the_pipeline_composition(nside, healpix_map, relerr):
+    import main
+
+    assert relerr(main.forward(healpix_map), forward_C(healpix_map)) == 0.0
+
+
+@pytest.mark.ft
+def test_main_roundtrip_matches_the_pipeline(nside, healpix_map, relerr):
+    import main
+
+    C = main.forward(healpix_map)
+    assert relerr(main.backward(C), backward_map(C, nside)) == 0.0
+
+
+def test_main_forward_rejects_an_iqu_stack():
+    """The old signature silently ignored Q and U; the new one must not accept it."""
+    import main
+
+    with pytest.raises(ValueError, match="single HEALPix map"):
+        main.forward(np.zeros((3, 12 * 4**2)))
