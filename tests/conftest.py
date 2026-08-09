@@ -15,8 +15,14 @@ import os
 # Mirrors src/_bootstrap.py, which cannot run first here: conftest imports healpy
 # below, and libomp reads its thread count when the image loads. One thread per
 # OpenMP runtime is a correctness requirement, not tuning -- see src/_openmp.py.
+# Deliberately duplicated rather than imported from src: importing the package here
+# would pull in src/FSHT.py, which raises ImportError without libfasttransforms, and
+# that would break `pytest -m "not ft"` for anyone who has not built the C library.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ["OMP_NUM_THREADS"] = os.environ.get("HP2SPH_OMP_THREADS", "1")
+_threads = os.environ.get("HP2SPH_OMP_THREADS", "1").strip()
+os.environ["OMP_NUM_THREADS"] = (
+    str(os.cpu_count() or 1) if _threads.lower() == "auto" else _threads
+)
 
 import numpy as np
 import healpy as hp

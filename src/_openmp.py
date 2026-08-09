@@ -43,7 +43,28 @@ import ctypes
 import os
 import sys
 
-NUM_THREADS = int(os.environ.get("HP2SPH_OMP_THREADS", "1"))
+
+def _requested_threads() -> int:
+    """Read ``HP2SPH_OMP_THREADS``. ``auto`` means every core; the default is 1.
+
+    A bad value raises here, at import, rather than at the first transform. Silently
+    falling back to 1 would look like the setting worked and left no trace.
+    """
+    raw = os.environ.get("HP2SPH_OMP_THREADS", "1").strip()
+    if raw.lower() == "auto":
+        return os.cpu_count() or 1
+    try:
+        n = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"HP2SPH_OMP_THREADS={raw!r} is not an integer or 'auto'"
+        ) from None
+    if n < 1:
+        raise ValueError(f"HP2SPH_OMP_THREADS={raw!r} must be >= 1")
+    return n
+
+
+NUM_THREADS = _requested_threads()
 
 _OMP_PREFIXES = ("libomp", "libiomp5", "libgomp")
 

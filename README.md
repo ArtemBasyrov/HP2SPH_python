@@ -19,9 +19,15 @@ The FSHT stage additionally needs the native **`libfasttransforms`** C library, 
 
 ### 1. Python package
 
+The project environment is **conda-forge**, not pip.
+That is not a preference: the PyPI `healpy` and `finufft` wheels each vendor their own OpenMP runtime, and two of those in one process deadlock (see [OpenMP](#openmp)).
+
 ```bash
-pip install -e .          # installs numpy, scipy, astropy, healpy, finufft
+micromamba create -y -f environment.yml   # creates hp2sph-omp
+micromamba activate hp2sph-omp
 ```
+
+`pip install -e .` still works if you only need the single-threaded pipeline, and installs numpy, scipy, astropy, healpy and finufft.
 
 ### 2. The `libfasttransforms` C library
 
@@ -138,10 +144,7 @@ Threading needs every library to share ONE OpenMP runtime.
 The PyPI wheels cannot give you that, so it takes a conda-forge environment plus a matching libfasttransforms build:
 
 ```bash
-micromamba create -y -n hp2sph-omp -c conda-forge \
-    python=3.11 numpy scipy astropy healpy finufft ducc0 pytest \
-    llvm-openmp fftw mpfr gmp openblas
-
+micromamba create -y -f environment.yml
 tools/build_fasttransforms.sh --prefix "$HOME/micromamba/envs/hp2sph-omp"
 ```
 
@@ -149,9 +152,12 @@ conda-forge healpy and finufft both link the env's `llvm-openmp`, and the script
 Check before opting in -- one path means you are clear:
 
 ```bash
-python -c "from src import _openmp; print(_openmp.runtime_paths())"
-HP2SPH_OMP_THREADS=8 python your_script.py
+python -c "from src import _openmp; print(_openmp.runtime_paths())"   # one path = clear
+HP2SPH_OMP_THREADS=auto python your_script.py                          # or a number
 ```
+
+`auto` means every core.
+The default stays 1 so timings and benchmarks are reproducible; opting in is per-run.
 
 **A repo-local `lib/libfasttransforms.*` shadows the environment**, because it is searched first.
 If one is present, either remove it or point `FASTTRANSFORMS_LIB` at the env build.

@@ -43,7 +43,9 @@ or as a standalone report (prints per-ell tables + saves a plot)::
 import os
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ["OMP_NUM_THREADS"] = os.environ.get("HP2SPH_OMP_THREADS", "1")
+os.environ["OMP_NUM_THREADS"] = os.environ.get("HP2SPH_OMP_THREADS", "1").replace(
+    "auto", str(os.cpu_count() or 1)
+)
 
 import sys
 

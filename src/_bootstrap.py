@@ -33,6 +33,8 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 # One thread per OpenMP runtime. See the module docstring: this is forced, and it
-# must happen before healpy / finufft / libfasttransforms are imported.
-OMP_NUM_THREADS = os.environ.get("HP2SPH_OMP_THREADS", "1")
-os.environ["OMP_NUM_THREADS"] = OMP_NUM_THREADS
+# must happen before healpy / finufft / libfasttransforms are imported. _openmp is
+# pure stdlib, so importing it here loads nothing that links libomp.
+from ._openmp import NUM_THREADS as OMP_NUM_THREADS  # noqa: E402
+
+os.environ["OMP_NUM_THREADS"] = str(OMP_NUM_THREADS)

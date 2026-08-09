@@ -1,0 +1,31 @@
+# The project environment.
+#
+#   micromamba create -y -f environment.yml
+#   tools/build_fasttransforms.sh --prefix "$HOME/micromamba/envs/hp2sph-omp"
+#
+# Everything here comes from conda-forge on purpose. The PyPI healpy and finufft
+# wheels each vendor their own copy of libomp, and two OpenMP runtimes in one
+# process deadlock -- that stack is stuck at one thread. The conda-forge builds
+# share this environment's llvm-openmp, and the build script links
+# libfasttransforms against the same one, which is what makes threads usable
+# (HP2SPH_OMP_THREADS=auto). See the OpenMP section of README.md.
+#
+# fftw / mpfr / gmp / openblas are build dependencies of libfasttransforms; the
+# rest is the pipeline itself.
+name: hp2sph-omp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - astropy
+  - healpy
+  - finufft
+  - ducc0          # benchmark baseline only
+  - pytest
+  - llvm-openmp    # THE single OpenMP runtime; do not add a second
+  - fftw
+  - mpfr
+  - gmp
+  - openblas
