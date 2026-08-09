@@ -21,8 +21,6 @@ dependencies = [
     "scipy",
     "astropy",
     "healpy",
-    "jax",
-    "jax_healpy",
     "finufft",
 ]
 

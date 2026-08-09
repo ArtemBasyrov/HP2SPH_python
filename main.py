@@ -4,18 +4,16 @@ Run from the repo root, e.g.::
 
     python main.py path/to/sky_map.fits
 
-The OpenMP guard and JAX float64 are enabled automatically on import (see
-``src/_bootstrap.py``), so no environment variables need to be set by hand.
+The OpenMP guards are set automatically on import (see ``src/_bootstrap.py``),
+so no environment variables need to be set by hand.
 """
 
 import argparse  # noqa: E402
 import time  # noqa: E402
 
-# Import the package first: this sets the OpenMP env guards (before any library
-# that links libomp loads) and enables JAX float64. Must precede healpy/numpy/jax.
-from src import _bootstrap
-
-_bootstrap.enable_x64()
+# Import the package first: this sets the OpenMP env guards, before any library
+# that links libomp loads. Must precede healpy/numpy/finufft.
+from src import _bootstrap  # noqa: F401
 
 import healpy as hp  # noqa: E402
 import numpy as np  # noqa: E402

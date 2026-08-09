@@ -1,5 +1,4 @@
 import numpy as np
-import jax.numpy as jnp
 import healpy as hp
 
 from .data_interpolation import create_latitude_array, ring_fold_plan
@@ -27,7 +26,7 @@ def _mirror_odd_mask(n_lon: int, spin: int) -> np.ndarray:
     return ((j + spin) % 2) == 1
 
 
-def _mirror_map(mp: jnp.array, spin: int) -> jnp.array:
+def _mirror_map(mp: np.ndarray, spin: int) -> np.ndarray:
     """The southern (mirrored) half of the DFS doubling, in MAP space.
 
     The DFS glide reflection is theta -> 2*pi - theta, phi -> phi + pi, and a spin-s
@@ -36,7 +35,7 @@ def _mirror_map(mp: jnp.array, spin: int) -> jnp.array:
         mirror(theta, phi) = (-1)^s * mp(2*pi - theta, phi + pi).
 
     In grid terms phi + pi is a ROLL by half the longitude samples, not a reversal.
-    The previous code used ``jnp.flip(mp)`` with no axis, which reverses BOTH axes and
+    The previous code used ``flip(mp)`` with no axis, which reverses BOTH axes and
     so applied phi -> -phi. That is wrong for every |m| > 0, but it only ever showed up
     through the pole fill (the only consumer of this array), where the sole mode with a
     nonzero pole value is |m| = |s|:
@@ -48,13 +47,15 @@ def _mirror_map(mp: jnp.array, spin: int) -> jnp.array:
         the same parity. This was the "m != 0 is broken" symptom (SPIN2_PLAN.md Phase 3).
     """
     n_lon = mp.shape[1]
-    mirrored = jnp.roll(jnp.flip(mp, axis=0), n_lon // 2, axis=1)
+    mirrored = np.roll(np.flip(mp, axis=0), n_lon // 2, axis=1)
     return mirrored * ((-1.0) ** spin)
 
 
-def DFS(mp: jnp.array, fft_coeff: jnp.array, spin: int = 0) -> (jnp.array, jnp.array):
+def DFS(
+    mp: np.ndarray, fft_coeff: np.ndarray, spin: int = 0
+) -> (np.ndarray, np.ndarray):
     south_part = _mirror_map(mp, spin)
-    double_map = jnp.concatenate((mp, south_part), axis=0)
+    double_map = np.concatenate((mp, south_part), axis=0)
 
     double_map = interpolate_polar_rings(double_map)
 
@@ -91,7 +92,7 @@ def DFS(mp: jnp.array, fft_coeff: jnp.array, spin: int = 0) -> (jnp.array, jnp.a
     return double_map, double_fft
 
 
-def DFS_inverse(double_fft: jnp.array, spin: int = 0) -> jnp.array:
+def DFS_inverse(double_fft: np.ndarray, spin: int = 0) -> np.ndarray:
     nside = double_fft.shape[1] // 4
     n_rings = 4 * nside - 1
 
@@ -162,13 +163,13 @@ def _pole_lagrange_weights(nodes: np.ndarray, x0: float) -> np.ndarray:
     return w
 
 
-def interpolate_polar_rings(mp: jnp.array) -> jnp.array:
+def interpolate_polar_rings(mp: np.ndarray) -> np.ndarray:
     """Fill the two (HEALPix-unsampled) pole rings of the DFS-doubled map.
 
     Each pole value is a polynomial extrapolation in latitude: fit a degree-(2*npts-1)
     polynomial through a stencil symmetric about the pole -- the ``npts`` rings nearest
     the pole and their mirror images across it -- and evaluate it AT the pole. This
-    replaces the old piecewise-LINEAR ``jnp.interp`` fill, which was the dominant
+    replaces the old piecewise-LINEAR ``interp`` fill, which was the dominant
     high-l forward error: the m=0 latitude profile P_l(cos theta) peaks at the poles,
     so a crude pole value injects a large zonal error that grows with l. The
     higher-order fit cuts the m=0 error ~5-15x at the band edge (now on par with /

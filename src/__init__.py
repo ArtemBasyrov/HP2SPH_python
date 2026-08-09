@@ -1,7 +1,5 @@
-# Set the OpenMP guard and enable JAX float64 before any numerical library loads.
+# Set the OpenMP guards before any numerical library loads.
 from . import _bootstrap  # noqa: F401  (sets KMP_DUPLICATE_LIB_OK on import)
-
-_bootstrap.enable_x64()
 
 from .data_interpolation import (  # noqa: E402
     get_ring_indices,

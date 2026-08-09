@@ -1,10 +1,6 @@
 """Stage 2: Double Fourier Sphere mirror/extension."""
 
-from functools import partial
-
 import healpy as hp
-import jax
-import jax.numpy as jnp
 import numpy as np
 
 from src.data_interpolation import transform_healpix_to_grid, create_latitude_array
@@ -50,7 +46,7 @@ def test_polynomial_pole_fill_beats_linear(nside):
         alm[hp.Alm.getidx(lmax, ell, 0)] = 1.0 / (1 + ell) ** 2  # smooth, nonzero pole
     mp = hp.alm2map(alm, nside=nside, lmax=lmax)
     upsampled, _ = transform_healpix_to_grid(mp)
-    doubled = jnp.concatenate((upsampled, jnp.flip(upsampled)), axis=0)
+    doubled = np.concatenate((upsampled, np.flip(upsampled)), axis=0)
 
     ells = np.arange(lmax + 1)
     a_l0 = np.array([alm[hp.Alm.getidx(lmax, ell, 0)].real for ell in ells])
@@ -61,11 +57,9 @@ def test_polynomial_pole_fill_beats_linear(nside):
 
     # old linear fill (3 rings each side, bracketing linear interp) for comparison
     lat = create_latitude_array(nside)
-    nth = jnp.concatenate((jnp.flip(lat[:3]), 180 - lat[:3]))
-    nfp = jnp.concatenate((jnp.flip(doubled[:3]), jnp.flip(doubled[-3:]))).T
-    north_lin = float(
-        jax.vmap(partial(lambda fp, th: jnp.interp(90, th, fp), th=nth))(nfp).mean()
-    )
+    nth = np.concatenate((np.flip(lat[:3]), 180 - lat[:3]))
+    nfp = np.concatenate((np.flip(doubled[:3]), np.flip(doubled[-3:]))).T
+    north_lin = float(np.mean([np.interp(90, nth, fp) for fp in nfp]))
 
     poly_err = abs(north_poly - north_exact) / abs(north_exact)
     lin_err = abs(north_lin - north_exact) / abs(north_exact)

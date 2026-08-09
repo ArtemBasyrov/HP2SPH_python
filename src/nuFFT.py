@@ -36,8 +36,6 @@ Synthesis (``cg_nufft_backward`` / ``inverse_nuFFT``) is a plain NUFFT evaluatio
 (well conditioned), so it stays O(N log N) in both regimes.
 """
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import finufft
 from scipy.sparse.linalg import cg, lsmr, LinearOperator
@@ -458,7 +456,7 @@ def _embed_centered(f_hat, N_full):
 
 
 def apply_nuFFT(
-    mp: jnp.array,
+    mp: np.ndarray,
     solver: str = "cg",
     N_modes=None,
     solve_modes=None,
@@ -468,7 +466,7 @@ def apply_nuFFT(
     rcond: float = 1e-13,
     sample_mask=None,
     fold=None,
-) -> jnp.array:
+) -> np.ndarray:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
     Two knobs decide accuracy vs invertibility vs scalability:
@@ -578,7 +576,7 @@ def apply_nuFFT(
     return fft_lat
 
 
-def inverse_nuFFT(fft_lat: jnp.array, eps: float = 1e-12) -> jnp.array:
+def inverse_nuFFT(fft_lat: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """
     Perform inverse NUFFT (Type-2) to reconstruct signal at non-uniform latitudes.
 
@@ -586,11 +584,11 @@ def inverse_nuFFT(fft_lat: jnp.array, eps: float = 1e-12) -> jnp.array:
     NUFFT regardless of which solver the forward analysis used.
 
     Parameters:
-    - fft_lat (jnp.array): Fourier coefficients from uniform frequency space.
+    - fft_lat (np.ndarray): Fourier coefficients from uniform frequency space.
     - eps (float): NUFFT precision.
 
     Returns:
-    - jnp.array: Reconstructed signal at non-uniform latitude samples.
+    - np.ndarray: Reconstructed signal at non-uniform latitude samples.
     """
     nside = fft_lat.shape[1] // 4
     DFT_upsampled_lat = _upsampled_latitudes(nside)

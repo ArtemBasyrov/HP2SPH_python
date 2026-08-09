@@ -1,5 +1,4 @@
 import numpy as np
-import jax.numpy as jnp
 
 # The FSHT stage runs in-process through the libfasttransforms C library (see
 # src/ft_sphere.py for how the library is located -- no env var needed when it is
@@ -9,7 +8,7 @@ from .ft_sphere import fourier2sph as _ft_fourier2sph
 from .ft_sphere import sph2fourier as _ft_sph2fourier
 
 
-def preparation(bivar_coeffs: jnp.array, spin: int = 0) -> jnp.array:
+def preparation(bivar_coeffs: np.ndarray, spin: int = 0) -> np.ndarray:
     # bivar_coeffs: (2*L+1 latitude modes [centered], 4*NSIDE longitude [natural
     # centered order m = -2*NSIDE .. 2*NSIDE-1]). The internal latitude band
     # limit L is set by the number of latitude modes the nuFFT solved for, which
@@ -85,7 +84,7 @@ def preparation(bivar_coeffs: jnp.array, spin: int = 0) -> jnp.array:
     return g
 
 
-def FSHT(bivar_coeffs: jnp.array) -> jnp.array:
+def FSHT(bivar_coeffs: np.ndarray) -> np.ndarray:
     g = preparation(bivar_coeffs)
     return _ft_fourier2sph(g)
 
@@ -205,7 +204,7 @@ def from_healpy_alm(
     return C
 
 
-def convert_to_bivar_coeffs(g: jnp.array, nside: int, spin: int = 0) -> jnp.array:
+def convert_to_bivar_coeffs(g: np.ndarray, nside: int, spin: int = 0) -> np.ndarray:
     # converting 2D array of g coefficients of Fourier-Chebyshev series
     # into 2D array of bivariate Fourier coefficients.
     #
@@ -265,7 +264,7 @@ def convert_to_bivar_coeffs(g: jnp.array, nside: int, spin: int = 0) -> jnp.arra
     return bivar_coeff
 
 
-def inverse_FSHT(alm: jnp.array, nside: int) -> jnp.array:
+def inverse_FSHT(alm: np.ndarray, nside: int) -> np.ndarray:
     bivar_coeffs = _ft_sph2fourier(np.asarray(alm))
     C = convert_to_bivar_coeffs(bivar_coeffs, nside)
     return bivar_coeffs, C
@@ -344,11 +343,11 @@ def spin_g_from_library(
 
 
 def FSHT_spin(
-    bivar_coeffs: jnp.array,
+    bivar_coeffs: np.ndarray,
     spin: int,
     scale: float = SPIN_SCALE_2PI,
     real_sh_norm: bool = True,
-) -> jnp.array:
+) -> np.ndarray:
     """Bivariate Fourier coefficients -> spin-``spin`` spherical-harmonic ``F`` array.
 
     Mirrors the scalar ``FSHT`` but routes through ``ft_sphere.fourier2spinsph``;
@@ -368,12 +367,12 @@ def FSHT_spin(
 
 
 def inverse_FSHT_spin(
-    F: jnp.array,
+    F: np.ndarray,
     nside: int,
     spin: int,
     scale: float = SPIN_SCALE_2PI,
     real_sh_norm: bool = True,
-) -> jnp.array:
+) -> np.ndarray:
     """Spin-``spin`` ``F`` array -> bivariate Fourier coefficients (inverse FSHT).
 
     The exact inverse of :func:`FSHT_spin`: ``spinsph2fourier`` then

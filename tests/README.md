@@ -13,9 +13,8 @@ interpreter for `python` below):
 python -m pytest
 ```
 
-- The `KMP_DUPLICATE_LIB_OK` OpenMP guard and JAX float64 are set automatically
-  by the package on import (and defensively in `conftest.py`), so no env-var
-  prefix is needed.
+- The `KMP_DUPLICATE_LIB_OK` OpenMP guard is set automatically by the package on
+  import (and defensively in `conftest.py`), so no env-var prefix is needed.
 - Set `OMP_NUM_THREADS=1` if the finufft + scipy-CG step misbehaves with threads.
 
 Skip the tests that need the `libfasttransforms` C library:

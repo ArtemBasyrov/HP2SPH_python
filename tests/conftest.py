@@ -5,22 +5,16 @@ interpreter for ``python``)::
 
     python -m pytest
 
-The OpenMP guard and float64 are set below (and by the package itself on import),
-so no env-var prefix is needed; ``-m "not ft"`` skips the tests that need the
+The OpenMP guards are set below (and by the package itself on import), so no
+env-var prefix is needed; ``-m "not ft"`` skips the tests that need the
 libfasttransforms C library.
 """
 
 import os
 
-# Must be set before finufft / jax pull in libomp. Harmless if already set.
+# Must be set before finufft pulls in libomp. Harmless if already set.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
-
-import jax
-
-# The pipeline needs float64; without this JAX silently runs float32 and the
-# transforms diverge. Must happen before any jax array is created.
-jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 import healpy as hp

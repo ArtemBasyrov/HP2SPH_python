@@ -1,14 +1,10 @@
-import jax.numpy as jnp
 import numpy as np
 import time
-import jax
-import jax_healpy as jhp
 
-from functools import partial
 from scipy.special import gammaln
 
 
-def get_ring_indices(nside: int) -> jnp.array:
+def get_ring_indices(nside: int) -> np.ndarray:
     """
     Compute the indices of the pixels in each equatorial ring.
 
@@ -23,12 +19,24 @@ def get_ring_indices(nside: int) -> jnp.array:
     ring_sizes = ring_pixel_counts(nside)
 
     # find the start and end indices
-    start_indices = jnp.cumsum(ring_sizes) - ring_sizes
+    start_indices = np.cumsum(ring_sizes) - ring_sizes
     end_indices = start_indices + ring_sizes - 1
-    return jnp.vstack((start_indices, end_indices, i)).T
+    return np.vstack((start_indices, end_indices, i)).T
 
 
-def ring_pixel_counts(nside: int) -> np.array:
+def npix2nside(npix: int) -> int:
+    """HEALPix pixel count -> nside, with a validity check.
+
+    Replaces the single ``jax_healpy.npix2nside`` call this module used to make --
+    the only reason ``jax_healpy`` was a dependency at all.
+    """
+    nside = int(round(np.sqrt(npix / 12.0)))
+    if 12 * nside**2 != npix:
+        raise ValueError(f"{npix} is not a valid HEALPix pixel count")
+    return nside
+
+
+def ring_pixel_counts(nside: int) -> np.ndarray:
     """Number of HEALPix pixels in each RING-ordered ring (north -> south)."""
     n_rings = 4 * nside - 1
     i = np.arange(1, n_rings + 1)
@@ -38,7 +46,7 @@ def ring_pixel_counts(nside: int) -> np.array:
     return sizes
 
 
-def ring_alias_target(nside: int) -> (np.array, np.array, np.array):
+def ring_alias_target(nside: int) -> (np.ndarray, np.ndarray, np.ndarray):
     """Where each longitude mode is actually MEASURED on each ring.
 
     A ring of ``npix`` pixels samples the longitude field at ``npix`` points, so it does
@@ -80,7 +88,7 @@ def ring_alias_target(nside: int) -> (np.array, np.array, np.array):
     return target, phase, resolved
 
 
-def mode_pole_envelope(nside: int, spin: int = 0, lmax: int = None) -> np.array:
+def mode_pole_envelope(nside: int, spin: int = 0, lmax: int = None) -> np.ndarray:
     """Largest ``|c_m(theta_r)|`` a band-limited spin-s field can carry, as a fraction of
     that mode's own peak over latitude.
 
@@ -111,7 +119,7 @@ def mode_pole_envelope(nside: int, spin: int = 0, lmax: int = None) -> np.array:
 
 def ring_fold_plan(
     nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None
-) -> (np.array, np.array, np.array):
+) -> (np.ndarray, np.ndarray, np.ndarray):
     """The forward latitude operator's longitude layout: fold + selective zero-assertion.
 
     The zero-padding the pipeline does today is exactly equivalent to "fold, AND assert
@@ -145,7 +153,7 @@ def ring_fold_plan(
     return np.where(trusted, j, target), np.where(trusted, 1.0, phase), ~relax
 
 
-def ring_first_longitude(nside: int) -> np.array:
+def ring_first_longitude(nside: int) -> np.ndarray:
     """Longitude (radians) of the first pixel in each RING-ordered HEALPix ring.
 
     HEALPix rings are not aligned to phi=0: each ring's first pixel sits half a
@@ -169,7 +177,7 @@ def ring_first_longitude(nside: int) -> np.array:
     return phi0
 
 
-def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
+def transform_healpix_to_grid(healpix_map: np.ndarray) -> (np.ndarray, np.ndarray):
     start_time = time.time()
     """
     Step 1: Transform a HEALPix map into a tensor product latitude-longitude grid,
@@ -181,25 +189,20 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     Returns:
         upsampled_data (ndarray): Data mapped to the structured grid.
     """
-    nside = jhp.npix2nside(healpix_map.shape[0])
+    healpix_map = np.asarray(healpix_map)
+    nside = npix2nside(healpix_map.shape[0])
     n_rings = 4 * nside - 1
 
     ring_info = get_ring_indices(nside)  # [start_id, end_id, ring_id]
-    upsampled_data = jnp.empty((n_rings, 4 * nside))
     fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
-
-    # Define function for vectorized FFT processing
-    def process_equatorial_ring(ring_data):
-        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside, norm="forward")
-        return fft_coeffs
 
     def process_polar_ring(ring_data):
         num_pts = len(ring_data)
-        # numpy (not jax) FFT: each polar ring has a different length so they can't
-        # be batched into one vmap, and a per-ring jax dispatch costs ~25 ms of
-        # tracing/dispatch overhead -- ~2*nside of them dominate the whole pipeline
-        # (13 s at nside=256). numpy's FFT on these small arrays is ~microseconds.
-        coeffs = np.fft.fft(np.asarray(ring_data), n=num_pts, norm="forward")
+        # Each polar ring has a different length, so the polar rings cannot be
+        # batched into one array FFT the way the equatorial belt is; they are
+        # transformed one at a time. numpy's FFT on these small arrays is
+        # ~microseconds, so ~2*nside of them are cheap.
+        coeffs = np.fft.fft(ring_data, n=num_pts, norm="forward")
 
         # this padding correctly accounts for fft frequencies position in the array
         mid = num_pts // 2
@@ -220,10 +223,7 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
     # A spin field (Q + iU) is carried as a complex map; an intensity (I) map is
     # real. Keep complex content when present, but drop the (zero) imaginary part
     # for a real input so the scalar path stays bit-identical to before.
-    is_complex = np.iscomplexobj(np.asarray(healpix_map))
-
-    def inverse_fft(fft_coeffs):
-        return jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward")
+    is_complex = np.iscomplexobj(healpix_map)
 
     # Diving data into rings
     # start_time0 = time.time()
@@ -232,8 +232,13 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
 
     # Processing of equatorial rings
     # start_time0 = time.time()
-    fft_coeff[nside - 1 : 3 * nside] = jax.vmap(process_equatorial_ring)(
-        jnp.array(ring_data[nside - 1 : 3 * nside])
+    # Every equatorial ring has 4*nside pixels, so the whole belt is one batched
+    # FFT over the last axis.
+    fft_coeff[nside - 1 : 3 * nside] = np.fft.fft(
+        np.array(ring_data[nside - 1 : 3 * nside]),
+        n=4 * nside,
+        axis=-1,
+        norm="forward",
     )
     # print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
 
@@ -267,7 +272,7 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
 
     # Inverse FFT
     # start_time0 = time.time()
-    upsampled_data = jax.vmap(inverse_fft)(fft_coeff)
+    upsampled_data = np.fft.ifft(fft_coeff, n=4 * nside, axis=-1, norm="forward")
     if not is_complex:
         upsampled_data = upsampled_data.real
     # print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
@@ -279,8 +284,8 @@ def transform_healpix_to_grid(healpix_map: jnp.array) -> (jnp.array, jnp.array):
 
 # The inverse transformation
 def transform_grid_to_healpix(
-    grid_data: jnp.array, fft_coeff: jnp.array = None, real_output: bool = True
-) -> jnp.array:
+    grid_data: np.ndarray, fft_coeff: np.ndarray = None, real_output: bool = True
+) -> np.ndarray:
     """
     Transform a tensor product latitude-longitude grid into a HEALPix map,
     correctly handling shifted rings.
@@ -308,11 +313,6 @@ def transform_grid_to_healpix(
     def _maybe_real(arr):
         return arr.real if real_output else arr
 
-    # Define function for vectorized FFT processing
-    def calc_fft(ring_data):
-        fft_coeffs = jnp.fft.fft(ring_data, n=4 * nside, norm="forward")
-        return fft_coeffs
-
     def process_polar_ring(fft_coeff, num_pts):
         # ALIAS (fold), do not truncate. A ring of num_pts pixels samples the
         # longitude field at num_pts points, so mode m lands in bin m % num_pts:
@@ -333,7 +333,7 @@ def transform_grid_to_healpix(
         corrected_coeffs_back = np.zeros(num_pts, dtype=complex)
         np.add.at(corrected_coeffs_back, m_signed % num_pts, np.asarray(fft_coeff))
 
-        # numpy (not jax) FFT for the same per-ring-dispatch reason as the forward.
+        # One FFT per ring, for the same ragged-length reason as the forward.
         fft_coeffs = _maybe_real(
             np.fft.ifft(corrected_coeffs_back, n=num_pts, norm="forward")
         )
@@ -342,14 +342,11 @@ def transform_grid_to_healpix(
         # ifft (also norm='forward') inverts it exactly with no extra factor.
         return fft_coeffs
 
-    def process_equatorial_ring(fft_coeffs):
-        return _maybe_real(jnp.fft.ifft(fft_coeffs, n=4 * nside, norm="forward"))
-
     if fft_coeff is None:
-        fft_coeff = np.zeros((n_rings, 4 * nside), dtype=complex)
-        fft_coeff[:] = jax.vmap(calc_fft)(
-            grid_data
-        )  # Processing all ring with process_equatorial_ring
+        # Every row of the grid has 4*nside samples, so this is one batched FFT.
+        fft_coeff = np.fft.fft(
+            np.asarray(grid_data), n=4 * nside, axis=-1, norm="forward"
+        )
 
     # Undo the phi=0 referencing applied in the forward transform: shift each
     # ring's mode-m coefficient back to its native first-pixel longitude with
@@ -358,10 +355,14 @@ def transform_grid_to_healpix(
     phi0 = ring_first_longitude(nside)
     fft_coeff = np.asarray(fft_coeff) * np.exp(+1j * np.outer(phi0, m_signed))
 
-    eq_rings = jax.vmap(process_equatorial_ring)(fft_coeff[nside - 1 : 3 * nside])
+    eq_rings = _maybe_real(
+        np.fft.ifft(
+            fft_coeff[nside - 1 : 3 * nside], n=4 * nside, axis=-1, norm="forward"
+        )
+    )
     start_id, _, _ = ring_info[nside - 1]
     _, end_id, _ = ring_info[3 * nside - 1]
-    healpix_map[start_id : end_id + 1] = jnp.concatenate(eq_rings)
+    healpix_map[start_id : end_id + 1] = eq_rings.ravel()
 
     # Polar rings: the phi=0 referencing was already undone above for all rows.
     for i in range(nside - 1):
@@ -379,7 +380,7 @@ def transform_grid_to_healpix(
 
 
 # For visualisation
-def create_upsampled_grid(nside: int) -> (jnp.array, jnp.array):
+def create_upsampled_grid(nside: int) -> (np.ndarray, np.ndarray):
     """
     Creates the longitude-latitude grid corresponding to the upsampled HEALPix points,
     covering the northern polar, equatorial, and southern polar regions.
@@ -401,7 +402,7 @@ def create_upsampled_grid(nside: int) -> (jnp.array, jnp.array):
     return np.meshgrid(longitudes, latitudes)
 
 
-def create_latitude_array(nside: int) -> jnp.array:
+def create_latitude_array(nside: int) -> np.ndarray:
     """
     Generate latitude values for HEALPix rings, covering polar and equatorial regions.
 

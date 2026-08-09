@@ -25,9 +25,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # Must precede every numerical import below (see module docstring).
-from src import _bootstrap  # noqa: E402
-
-_bootstrap.enable_x64()
+from src import _bootstrap  # noqa: E402, F401
 
 import numpy as np  # noqa: E402
 import healpy as hp  # noqa: E402
@@ -325,7 +323,7 @@ def env_metadata(extra=None):
     import importlib
 
     versions = {}
-    for mod in ("numpy", "scipy", "healpy", "ducc0", "finufft", "jax", "psutil"):
+    for mod in ("numpy", "scipy", "healpy", "ducc0", "finufft", "psutil"):
         try:
             versions[mod] = getattr(importlib.import_module(mod), "__version__", "?")
         except ImportError:

@@ -45,10 +45,6 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
-import jax
-
-jax.config.update("jax_enable_x64", True)
-
 import sys
 
 # Allow running as a standalone script (python tests/test_paper_accuracy.py),

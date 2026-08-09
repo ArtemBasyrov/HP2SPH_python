@@ -20,7 +20,7 @@ The FSHT stage additionally needs the native **`libfasttransforms`** C library, 
 ### 1. Python package
 
 ```bash
-pip install -e .          # installs numpy, scipy, astropy, healpy, jax, jax_healpy, finufft
+pip install -e .          # installs numpy, scipy, astropy, healpy, finufft
 ```
 
 ### 2. The `libfasttransforms` C library
@@ -47,7 +47,7 @@ If none load, the FSHT stage raises an `ImportError` with a build/install hint.
 ## Usage
 
 Run from the repo root.
-The OpenMP guard (`KMP_DUPLICATE_LIB_OK`) and JAX float64 are enabled automatically on import, so **no environment-variable prefix is needed**:
+The OpenMP guard (`KMP_DUPLICATE_LIB_OK`) is set automatically on import, so **no environment-variable prefix is needed**:
 
 ```bash
 python main.py path/to/sky_map.fits            # forward transform
