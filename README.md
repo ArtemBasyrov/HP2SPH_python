@@ -178,7 +178,7 @@ Output is identical to the single-threaded result to machine precision.
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest    # full suite (235 tests)
+PYTHONPATH=. python -m pytest    # full suite (243 tests)
 python -m pytest -m "not ft"     # skip tests that need libfasttransforms
 ```
 

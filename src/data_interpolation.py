@@ -1,7 +1,10 @@
-import numpy as np
+import logging
 import time
 
+import numpy as np
 from scipy.special import gammaln
+
+logger = logging.getLogger(__name__)
 
 
 def get_ring_indices(nside: int) -> np.ndarray:
@@ -225,13 +228,10 @@ def transform_healpix_to_grid(healpix_map: np.ndarray) -> (np.ndarray, np.ndarra
     # for a real input so the scalar path stays bit-identical to before.
     is_complex = np.iscomplexobj(healpix_map)
 
-    # Diving data into rings
-    # start_time0 = time.time()
+    # Dividing data into rings
     ring_data = [healpix_map[start : end + 1] for start, end, nring in ring_info]
-    # print(f"Ring selection execution time: {time.time() - start_time0:.6f} seconds")
 
     # Processing of equatorial rings
-    # start_time0 = time.time()
     # Every equatorial ring has 4*nside pixels, so the whole belt is one batched
     # FFT over the last axis.
     fft_coeff[nside - 1 : 3 * nside] = np.fft.fft(
@@ -240,27 +240,11 @@ def transform_healpix_to_grid(healpix_map: np.ndarray) -> (np.ndarray, np.ndarra
         axis=-1,
         norm="forward",
     )
-    # print(f"Equatorial ring execution time: {time.time() - start_time0:.6f} seconds")
 
     # Processing of polar rings
-    """
-    As an idea I can switch to Julia FFTW library for the FFT computation in polar rings
-
-    In python:
-    import multiprocessing
-
-    num_cores = multiprocessing.cpu_count()
-    print(f"Number of CPU cores: {num_cores}")
-
-    And then in Julia:
-    using FFTW
-    FFTW.set_num_threads(num_cores)
-    """
-    # start_time0 = time.time()
     for i in range(nside - 1):
         fft_coeff[i] = process_polar_ring(ring_data[i])
         fft_coeff[n_rings - 1 - i] = process_polar_ring(ring_data[n_rings - 1 - i])
-    # print(f"Polar ring execution time: {time.time() - start_time0:.6f} seconds")
 
     # Reference every ring's coefficients to a common phi=0 origin. Each ring's
     # first pixel is offset by phi_first, so its mode-m FFT coefficient carries a
@@ -271,14 +255,13 @@ def transform_healpix_to_grid(healpix_map: np.ndarray) -> (np.ndarray, np.ndarra
     fft_coeff *= np.exp(-1j * np.outer(phi0, m_signed))
 
     # Inverse FFT
-    # start_time0 = time.time()
     upsampled_data = np.fft.ifft(fft_coeff, n=4 * nside, axis=-1, norm="forward")
     if not is_complex:
         upsampled_data = upsampled_data.real
-    # print(f"Inverse FFT execution time: {time.time() - start_time0:.6f} seconds")
 
-    end_time = time.time()
-    print(f"data_interpolation execution time: {end_time - start_time:.6f} seconds")
+    logger.debug(
+        "transform_healpix_to_grid(nside=%d): %.6f s", nside, time.time() - start_time
+    )
     return upsampled_data, fft_coeff
 
 

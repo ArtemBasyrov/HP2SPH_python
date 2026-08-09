@@ -36,12 +36,16 @@ Synthesis (``cg_nufft_backward`` / ``inverse_nuFFT``) is a plain NUFFT evaluatio
 (well conditioned), so it stays O(N log N) in both regimes.
 """
 
+import logging
+
 import numpy as np
 import finufft
 from scipy.sparse.linalg import cg, lsmr, LinearOperator
 
 from . import _openmp
 from .data_interpolation import create_latitude_array
+
+logger = logging.getLogger(__name__)
 
 
 def compute_voronoi_weights_1d(x, domain=(np.pi, -np.pi)):
@@ -279,7 +283,7 @@ def cg_nufft_forward(
     f_samples,
     N_modes=None,
     rtol=1e-9,
-    maxiter=200,
+    maxiter=None,
     eps=1e-12,
     sample_mask=None,
     fold=None,
@@ -462,7 +466,7 @@ def apply_nuFFT(
     N_modes=None,
     solve_modes=None,
     rtol: float = None,
-    maxiter: int = 200,
+    maxiter: int = None,
     eps: float = 1e-12,
     rcond: float = 1e-13,
     sample_mask=None,
@@ -516,7 +520,9 @@ def apply_nuFFT(
     L = 4*nside array, with bit-identical accuracy now that the `preparation` float-
     parity bug is fixed. Set ``N_modes`` larger than ``solve_modes`` to zero-pad the
     solved spectrum into a wider FSHT band (rarely needed). ``rcond`` regularises the
-    SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT.
+    SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT. ``maxiter=None`` (the
+    default) leaves the iteration cap to the solver; every solve here is stopped by
+    ``rtol`` long before it, so the cap is a safety net rather than a knob.
     """
     _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
     nside = mp.shape[1] // 4
@@ -550,12 +556,12 @@ def apply_nuFFT(
             N_modes=solve_modes,
             sample_mask=sample_mask,
             rtol=rtol,
-            maxiter=maxiter if maxiter != 200 else None,
+            maxiter=maxiter,
             eps=eps,
             fold=fold,
         )
         if info != 0:
-            print(f"LSMR did not converge (istop={info})!")
+            logger.warning("LSMR did not converge (istop=%s)", info)
     elif solver == "cg":
         fft_lat, info = cg_nufft_forward(
             DFT_upsampled_lat,
@@ -568,7 +574,7 @@ def apply_nuFFT(
             fold=fold,
         )
         if info != 0:
-            print("CG solver didn't converge!")
+            logger.warning("CG did not converge (info=%s)", info)
     else:
         raise ValueError(f"unknown solver {solver!r}; use 'svd', 'cg' or 'lsmr'")
 
@@ -601,8 +607,7 @@ def inverse_nuFFT(fft_lat: np.ndarray, eps: float = 1e-12) -> np.ndarray:
         DFT_upsampled_lat, fft_lat.T.copy(), eps=eps
     )
 
-    # output a warning if the solver didn't converge
     if info != 0:
-        print("CG solver didn't converge!")
+        logger.warning("CG did not converge (info=%s)", info)
 
     return mp_reconstructed

@@ -2,7 +2,7 @@
 
 Per-stage and end-to-end tests for the HEALPix <-> alm pipeline, scalar and spin-2.
 The tests are designed to **encode correct behaviour and surface failure modes**,
-not to be made green by loosening tolerances. The whole suite passes (235 tests).
+not to be made green by loosening tolerances. The whole suite passes (243 tests).
 
 ## Running
 
