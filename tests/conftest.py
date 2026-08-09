@@ -12,9 +12,11 @@ libfasttransforms C library.
 
 import os
 
-# Must be set before finufft pulls in libomp. Harmless if already set.
+# Mirrors src/_bootstrap.py, which cannot run first here: conftest imports healpy
+# below, and libomp reads its thread count when the image loads. One thread per
+# OpenMP runtime is a correctness requirement, not tuning -- see src/_openmp.py.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ["OMP_NUM_THREADS"] = os.environ.get("HP2SPH_OMP_THREADS", "1")
 
 import numpy as np
 import healpy as hp

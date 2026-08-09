@@ -32,8 +32,8 @@ Results are written after each cell, so an interrupted run keeps what it finishe
 Re-running skips completed cells; pass `--no-resume` to recompute them.
 
 Do not set `OMP_NUM_THREADS` or `KMP_DUPLICATE_LIB_OK` by hand.
-`benchmarks/common.py` imports `src._bootstrap` before any numerical library loads, which sets both and enables JAX float64.
-Importing it late makes JAX fall back to float32 and makes macOS abort on the duplicate OpenMP runtime.
+`benchmarks/common.py` imports `src._bootstrap` before any numerical library loads, which sets both.
+Importing it late lets several OpenMP runtimes come up multithreaded, which crashes or hangs the process rather than merely slowing it; see `src/_openmp.py`.
 
 ## Backends
 

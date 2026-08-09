@@ -7,8 +7,9 @@ Anything else would compare configurations rather than algorithms.
 Single threaded is the headline on purpose. ducc0 and healpy both scale across
 cores while the HP2SPH pipeline's CG/LSMR latitude solve is largely serial, so a
 multi-core comparison measures OpenMP maturity rather than the algorithm. It is
-also what the repo's existing profiling assumes (``OMP_NUM_THREADS=1``, forced by
-``src/_bootstrap.py`` because several libomp copies in one process segfault).
+also what the repo's existing profiling assumes: ``src/_bootstrap.py`` forces
+``OMP_NUM_THREADS=1`` because several libomp copies in one process crash or hang
+(see ``src/_openmp.py``), so single threaded is the only configuration available.
 
 Read the result against the scaling claim, not for a winner: HP2SPH's advertised
 ``O(N log^2 N)`` comes entirely from the FastTransforms butterfly algorithm, and

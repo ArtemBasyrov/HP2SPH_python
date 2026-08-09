@@ -2,7 +2,7 @@
 
 Per-stage and end-to-end tests for the HEALPix <-> alm pipeline, scalar and spin-2.
 The tests are designed to **encode correct behaviour and surface failure modes**,
-not to be made green by loosening tolerances. The whole suite passes (201 tests).
+not to be made green by loosening tolerances. The whole suite passes (235 tests).
 
 ## Running
 
@@ -13,9 +13,13 @@ interpreter for `python` below):
 python -m pytest
 ```
 
-- The `KMP_DUPLICATE_LIB_OK` OpenMP guard is set automatically by the package on
-  import (and defensively in `conftest.py`), so no env-var prefix is needed.
-- Set `OMP_NUM_THREADS=1` if the finufft + scipy-CG step misbehaves with threads.
+- **No environment-variable prefix is needed, including `OMP_NUM_THREADS=1`.**
+  `src/_bootstrap.py` sets the OpenMP guards on import, and `conftest.py` repeats
+  them because it imports healpy before any `src` code runs.
+- Do not set `OMP_NUM_THREADS` yourself. Three dependencies each vendor their own
+  copy of libomp, and more than one of them threaded makes the process crash or
+  hang; `src/_openmp.py` explains the failure modes and `tests/test_openmp_guard.py`
+  pins them. `HP2SPH_OMP_THREADS` is the override, and it reproduces the failures.
 
 Skip the tests that need the `libfasttransforms` C library:
 

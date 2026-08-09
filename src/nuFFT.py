@@ -40,6 +40,7 @@ import numpy as np
 import finufft
 from scipy.sparse.linalg import cg, lsmr, LinearOperator
 
+from . import _openmp
 from .data_interpolation import create_latitude_array
 
 
@@ -517,6 +518,7 @@ def apply_nuFFT(
     solved spectrum into a wider FSHT band (rarely needed). ``rcond`` regularises the
     SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT.
     """
+    _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
     nside = mp.shape[1] // 4
     if rtol is None:
         rtol = 1e-9
@@ -590,6 +592,7 @@ def inverse_nuFFT(fft_lat: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     Returns:
     - np.ndarray: Reconstructed signal at non-uniform latitude samples.
     """
+    _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
     nside = fft_lat.shape[1] // 4
     DFT_upsampled_lat = _upsampled_latitudes(nside)
 

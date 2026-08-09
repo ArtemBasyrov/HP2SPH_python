@@ -47,6 +47,8 @@ import sys
 
 import numpy as np
 
+from . import _openmp
+
 _TRANS_N = ord("N")  # 'N': no transpose (the only mode we need)
 
 _LIB_NAMES = (
@@ -112,7 +114,52 @@ def _load_library():
     )
 
 
+def _preload_finufft():
+    """Import finufft BEFORE libfasttransforms is loaded. Order is not optional.
+
+    libfasttransforms links one OpenMP runtime (Homebrew's libomp in this checkout)
+    and the finufft wheel vendors another under ``finufft/.dylibs/`` -- see
+    ``src/_openmp.py`` for the full picture. Whichever initializes first claims the
+    process-wide runtime state, and the two orders are NOT symmetric. Measured on
+    macOS 24.6 / arm64, no OpenMP env vars set:
+
+    * finufft imported first  -> both libraries run, repeatedly, no error;
+    * libfasttransforms first -> SIGSEGV on the first ``ft_execute_*``.
+
+    ``KMP_DUPLICATE_LIB_OK`` does not help. It only suppresses the ``OMP: Error #15``
+    message, which is a different symptom from the crash.
+
+    Importing here rather than in ``src/__init__.py`` puts the guard in the module
+    that actually loads the offending library, so ``import src.FSHT`` and
+    ``import src.ft_sphere`` are protected too, not just ``import src``.
+
+    Failure is tolerated: finufft is a pipeline dependency, not an FSHT one, so a
+    caller who only wants ``fourier2sph`` should not be blocked by its absence.
+    """
+    try:
+        import finufft  # noqa: F401
+    except ImportError:
+        pass
+
+
+_preload_finufft()
 _lib = _load_library()
+
+
+def _pin_threads():
+    """Pin every loaded OpenMP runtime before entering libfasttransforms.
+
+    See ``src/_openmp.py`` for why this is a correctness requirement and not a
+    tuning knob: three vendored copies of libomp are loaded at once, and unless each
+    is held to one thread the process crashes or hangs. Called per execute rather
+    than once at import because ``omp_set_num_threads`` sets the CALLING thread's
+    ICV; the scan behind it is cached, so the repeat cost is a few microseconds.
+    """
+    _openmp.pin()
+
+
+_pin_threads()
+
 _lib.ft_plan_sph2fourier.restype = ctypes.c_void_p
 _lib.ft_plan_sph2fourier.argtypes = [ctypes.c_int]
 for _name in ("ft_execute_sph2fourier", "ft_execute_fourier2sph"):
@@ -203,6 +250,7 @@ def _apply(symbol, A):
     A = np.ascontiguousarray(A, dtype=np.complex128)
     n, m = A.shape  # n = L+1 rows; m = 2L+1 = 2n-1 cols
     fn = getattr(_lib, symbol)
+    _pin_threads()
     p = _plan(n)
     out = np.empty_like(A)
     for part in ("real", "imag"):
@@ -239,6 +287,7 @@ def _apply_spin(symbol, A, spin):
     A = np.asfortranarray(A, dtype=np.complex128)
     n, m = A.shape  # n = L+1 rows; m = 2L+1 = 2n-1 cols
     fn = getattr(_lib, symbol)
+    _pin_threads()
     p = _spin_plan(n, spin)
     out = A.copy(order="F")  # operate in place on a copy
     fn(_TRANS_N, p, out.ctypes.data_as(ctypes.c_void_p), n, m)
@@ -276,6 +325,7 @@ def _spinsph_fftw(kind, values_NM, spin):
     A = np.asfortranarray(values_NM, dtype=np.complex128)
     N, M = A.shape
     out = A.copy(order="F")
+    _pin_threads()
     p = _fftw_plan(kind, N, M, spin)
     getattr(_lib, f"ft_execute_spinsph_{kind}")(
         _TRANS_N, p, out.ctypes.data_as(ctypes.c_void_p), N, M

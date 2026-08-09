@@ -1,4 +1,5 @@
-# Set the OpenMP guards before any numerical library loads.
+# Set the OpenMP guards before any numerical library loads. This import must stay
+# first: libomp reads its thread count when the image loads (see src/_openmp.py).
 from . import _bootstrap  # noqa: F401  (sets KMP_DUPLICATE_LIB_OK on import)
 
 from .data_interpolation import (  # noqa: E402

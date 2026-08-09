@@ -43,7 +43,7 @@ or as a standalone report (prints per-ell tables + saves a plot)::
 import os
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ["OMP_NUM_THREADS"] = os.environ.get("HP2SPH_OMP_THREADS", "1")
 
 import sys
 

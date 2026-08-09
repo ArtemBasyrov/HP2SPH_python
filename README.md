@@ -47,7 +47,7 @@ If none load, the FSHT stage raises an `ImportError` with a build/install hint.
 ## Usage
 
 Run from the repo root.
-The OpenMP guard (`KMP_DUPLICATE_LIB_OK`) is set automatically on import, so **no environment-variable prefix is needed**:
+The OpenMP guards are set automatically on import, so **no environment-variable prefix is needed** -- in particular the `OMP_NUM_THREADS=1` older notes asked for is handled for you (see [OpenMP](#openmp) below):
 
 ```bash
 python main.py path/to/sky_map.fits            # forward transform
@@ -110,10 +110,69 @@ Reproduce with `tests/test_alias_fold.py` and `tests/test_spin_paper_accuracy.py
 
 The individual pipeline stages are exposed in the `src` package (`transform_healpix_to_grid`, `DFS`, `apply_nuFFT`, `FSHT`, and their inverses).
 
+## OpenMP
+
+Three dependencies each vendor their own copy of the LLVM OpenMP runtime, and all three load into one process:
+
+| library | its libomp |
+|---|---|
+| healpy | `site-packages/healpy/.dylibs/libomp.dylib` |
+| finufft | `site-packages/finufft/.dylibs/libomp.dylib` |
+| libfasttransforms | Homebrew's `/opt/homebrew/opt/libomp/lib/libomp.dylib` |
+
+libomp keeps process-wide state, so more than one copy running a worker pool is unsupported.
+The observed failures are a `OMP: Error #15` abort, a segfault inside the first FastTransforms call, and a hang inside `finufft.Plan.setpts`.
+One thread per runtime avoids all three, so **single-threaded OpenMP is a correctness requirement here, not a tuning choice**.
+
+You do not have to arrange it.
+`src/_bootstrap.py` sets `OMP_NUM_THREADS=1` and `KMP_DUPLICATE_LIB_OK=TRUE` before anything links libomp, and `src/_openmp.py` pins any runtime that loaded first anyway.
+`OMP_NUM_THREADS` is forced rather than defaulted, because an exported `OMP_NUM_THREADS=8` is the most common way to make the pipeline hang.
+
+Set `HP2SPH_OMP_THREADS` to override the count.
+It is refused with a `MultipleOpenMPRuntimes` error, naming the offending libraries, whenever more than one runtime is loaded -- an explanation beats a segfault.
+`tests/test_openmp_guard.py` pins this behaviour.
+
+### Running with threads
+
+Threading needs every library to share ONE OpenMP runtime.
+The PyPI wheels cannot give you that, so it takes a conda-forge environment plus a matching libfasttransforms build:
+
+```bash
+micromamba create -y -n hp2sph-omp -c conda-forge \
+    python=3.11 numpy scipy astropy healpy finufft ducc0 pytest \
+    llvm-openmp fftw mpfr gmp openblas
+
+tools/build_fasttransforms.sh --prefix "$HOME/micromamba/envs/hp2sph-omp"
+```
+
+conda-forge healpy and finufft both link the env's `llvm-openmp`, and the script links libfasttransforms against the same one.
+Check before opting in -- one path means you are clear:
+
+```bash
+python -c "from src import _openmp; print(_openmp.runtime_paths())"
+HP2SPH_OMP_THREADS=8 python your_script.py
+```
+
+**A repo-local `lib/libfasttransforms.*` shadows the environment**, because it is searched first.
+If one is present, either remove it or point `FASTTRANSFORMS_LIB` at the env build.
+Getting this wrong used to segfault; it now raises with both libomp paths named.
+
+Measured forward transform, this machine (14 cores), median of 3, band `lmax = 2*nside`:
+
+| nside | 1 thread | 4 | 8 | 14 | speedup |
+|---|---|---|---|---|---|
+| 256 | 0.447 s | 0.303 s | 0.281 s | 0.274 s | 1.6x |
+| 512 | 2.031 s | 1.067 s | 0.865 s | 0.840 s | 2.4x |
+
+Only the two C stages scale: at nside 512 the latitude nuFFT goes 1.522 s -> 0.601 s and the FSHT 0.358 s -> 0.096 s.
+`data_interpolation` and `DFS` are serial numpy and do not move.
+Returns flatten past 8 threads.
+Output is identical to the single-threaded result to machine precision.
+
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest    # full suite (226 tests)
+PYTHONPATH=. python -m pytest    # full suite (235 tests)
 python -m pytest -m "not ft"     # skip tests that need libfasttransforms
 ```
 
@@ -123,5 +182,5 @@ Tests that need the C library skip cleanly when it is not installed.
 
 ## Notes
 
-- The math requires float64; this is handled for you (see `src/_bootstrap.py`).
+- The math requires float64. The pipeline is pure numpy, so that is the default and there is no precision flag to forget.
 - `backward_spin` runs only the `spin = +2` pass: `z = Q + iU` carries the whole real `(Q, U)` pair, and the `-2` coefficients are fixed by the reality of `Q` and `U`.
