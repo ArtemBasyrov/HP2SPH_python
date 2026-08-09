@@ -398,6 +398,15 @@ class ResultStore:
         return tuple(fields.get(f) for f in self.key_fields) in self._keys
 
     def add(self, record):
+        # Stamp when this cell was computed. Without it a stale row is
+        # indistinguishable from a freshly recomputed one whose numbers happen to
+        # be identical, which is the normal case for a deterministic backend. That
+        # ambiguity is how an out-of-date --nside ladder survived a "full" re-run
+        # unnoticed; see benchmarks/compare_results.py.
+        record = {
+            **record,
+            "_computed_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
         key = self._key(record)
         if key in self._keys:  # replace an existing cell rather than duplicate it
             self.records = [r for r in self.records if self._key(r) != key]

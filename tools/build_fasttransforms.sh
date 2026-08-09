@@ -6,11 +6,19 @@
 # conda-forge, so it has to be built. Two modes, and the difference is which
 # OpenMP runtime the result links:
 #
-#   --prefix <env>   link the OpenMP/FFTW/MPFR/BLAS in <env>, and install into
+#   --prefix <env>   link the OpenMP/FFTW/MPFR in <env>, and install into
 #                    <env>/lib. Use this with a conda-forge environment whose
 #                    healpy and finufft also link that env's llvm-openmp. That
 #                    is the ONLY configuration in which the pipeline can use
 #                    threads -- see the OpenMP section of README.md.
+#
+#                    BLAS comes from Apple Accelerate by default on macOS, NOT
+#                    from the environment. ft_execute_fourier2sph is four
+#                    cblas_dtrmm calls, and Accelerate beats conda-forge
+#                    OpenBLAS by 1.26x on that stage (FSHT 0.286 s vs 0.358 s
+#                    at nside 512, median of 3). Accelerate threads through GCD
+#                    rather than OpenMP, so it does NOT reintroduce a second
+#                    OpenMP runtime. Pass --blas openblas to override.
 #
 #   --homebrew       link Homebrew's libomp/fftw/mpfr and Apple Accelerate, and
 #                    install into the repo's lib/. Works with PyPI healpy and
@@ -31,12 +39,14 @@ UPSTREAM="https://github.com/MikaelSlevinsky/FastTransforms"
 MODE=""
 PREFIX=""
 SOURCE=""
+BLAS=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --homebrew) MODE="homebrew"; shift ;;
         --prefix)   MODE="prefix"; PREFIX="${2:?--prefix needs a path}"; shift 2 ;;
         --source)   SOURCE="${2:?--source needs a path}"; shift 2 ;;
-        -h|--help)  sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --blas)     BLAS="${2:?--blas needs accelerate|openblas}"; shift 2 ;;
+        -h|--help)  sed -n '2,42p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -74,10 +84,27 @@ else
         exit 1
     }
     echo ">> prefix: $PREFIX"
+    if [[ -z "$BLAS" ]]; then
+        if [[ "$(uname -s)" == "Darwin" ]]; then BLAS=accelerate; else BLAS=openblas; fi
+    fi
+    echo ">> blas: $BLAS"
     # FT_PREFIX is Make.inc's own supported hook for a non-system dependency tree.
     # The rpath is what lets the built library find that env's libomp at runtime.
-    BUILD_ARGS=(CC=clang FT_PREFIX="$PREFIX" FT_BLAS=openblas)
     export LDFLAGS="-Wl,-rpath,$PREFIX/lib"
+    if [[ "$BLAS" == "accelerate" ]]; then
+        SDK="$(xcrun --show-sdk-path)"
+        VECLIB="$SDK/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A"
+        [[ -d "$VECLIB" ]] || { echo "no vecLib under $SDK" >&2; exit 1; }
+        # vecLib's lib dir and headers must come BEFORE the prefix, or -lblas
+        # picks up the environment's libblas.dylib (a symlink to OpenBLAS).
+        # CFLAGS has to be given whole: Make.inc guards it with ifndef, so it
+        # cannot be appended to, and -mcpu=native must be reinstated by hand.
+        export LDFLAGS="-L$VECLIB $LDFLAGS"
+        BUILD_ARGS=(CC=clang FT_PREFIX="$PREFIX" FT_BLAS=blas
+                    CFLAGS="-O3 -mcpu=native -std=gnu11 -I./src -I$VECLIB/Headers -I$PREFIX/include")
+    else
+        BUILD_ARGS=(CC=clang FT_PREFIX="$PREFIX" FT_BLAS=openblas)
+    fi
     DEST="$PREFIX/lib"
 fi
 
@@ -92,11 +119,11 @@ mkdir -p "$DEST"
 cp "$LIB" "$DEST/$(basename "$LIB")"
 echo ">> installed $DEST/$(basename "$LIB")"
 
-echo ">> OpenMP runtime it links:"
+echo ">> OpenMP runtime and BLAS it links:"
 if command -v otool >/dev/null; then
-    otool -L "$DEST/$(basename "$LIB")" | grep -i omp || echo "   (none -- built without OpenMP)"
+    otool -L "$DEST/$(basename "$LIB")" | grep -iE "omp|blas" || echo "   (none found)"
 else
-    ldd "$DEST/$(basename "$LIB")" | grep -i omp || echo "   (none -- built without OpenMP)"
+    ldd "$DEST/$(basename "$LIB")" | grep -iE "omp|blas" || echo "   (none found)"
 fi
 
 if [[ "$MODE" == "prefix" ]]; then

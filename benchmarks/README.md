@@ -31,6 +31,19 @@ Every script accepts `--nside`, `--backends`, `--seeds` and `--out`.
 Results are written after each cell, so an interrupted run keeps what it finished.
 Re-running skips completed cells; pass `--no-resume` to recompute them.
 
+**`--no-resume` merges, it does not replace.**
+It recomputes only the cells in the *current* `--nside` ladder and leaves every other row untouched.
+So a run whose ladder omits an nside keeps that nside's old rows, and a run without the flag skips cells that already exist.
+Re-baselining the whole file means passing the full ladder explicitly, e.g. `--nside 8 16 32 64 128 256 512 1024 --no-resume`.
+
+Each record carries `_computed_utc`, so a stale cell is detectable after the fact.
+`python -m benchmarks.compare_results [OLD_DIR] [NEW_DIR]` recomputes every number the documentation quotes, diffs two result sets, and reports the computation dates per file — mixed dates mean part of the file was not refreshed.
+Do not use bit-identical numbers as a staleness signal: a deterministic backend reproduces exactly, so identical output is the normal case, not evidence of a skip.
+
+**Speed rows are not comparable across days.**
+A single HP2SPH timing varies ~6% run to run (healpy and ducc0 ~1%), and machine state drifts.
+Compare speed by running both configurations alternately in one sitting and taking medians; the accuracy rows are deterministic and can be compared against a stored baseline safely.
+
 Do not set `OMP_NUM_THREADS` or `KMP_DUPLICATE_LIB_OK` by hand.
 `benchmarks/common.py` imports `src._bootstrap` before any numerical library loads, which sets both.
 Importing it late lets several OpenMP runtimes come up multithreaded, which crashes or hangs the process rather than merely slowing it; see `src/_openmp.py`.
