@@ -48,29 +48,41 @@ from .data_interpolation import create_latitude_array
 logger = logging.getLogger(__name__)
 
 
-def compute_voronoi_weights_1d(x, domain=(np.pi, -np.pi)):
+def compute_voronoi_weights_1d(x, period=2 * np.pi):
+    """Voronoi cell widths for monotonic samples on a PERIODIC axis.
+
+    The DFS doubling makes the latitude variable periodic with period ``2*pi``, so the
+    samples live on a circle and the first and last cells meet at the seam. Each point
+    gets half the gap to its neighbour on either side, with the neighbour of the first
+    point being the last one, wrapped:
+
+        g[i] = x[i] - x[i+1]  (descending input),  g[-1] = x[-1] - x[0] + period
+        w[i] = (g[i-1] + g[i]) / 2                 (indices mod M)
+
+    The widths sum to ``period`` and are all positive.
+
+    This used to clamp the two end cells to fixed boundaries ``(pi, -pi)`` instead of
+    wrapping, which is wrong on a circle and was not symmetric. The north pole sits
+    exactly ON the seam at ``x = pi``, so it was given only the half of its cell that
+    falls below ``pi`` and the southernmost mirrored ring absorbed the other half:
+    measured at nside 8, ``0.0510`` against a true ``0.1021``, and ``0.1533`` against a
+    true ``0.1022``. Every other weight was already symmetric to 4.4e-16 and the total
+    was already exactly ``2*pi`` -- the old code conserved the measure and misallocated
+    it. The starved row is the Lagrange pole fill, which carries the m=0 high-l
+    accuracy, and the asymmetry also blocked exploiting the DFS mirror symmetry to
+    halve the solve (see fix_pass_2.md item 1).
     """
-    Compute Voronoi cell-based weights for 1D nonuniform points.
-
-    Args:
-        x (np.ndarray): 1D nonuniform sample locations.
-        domain (tuple): Domain boundaries (left, right).
-
-    Returns:
-        weights (np.ndarray): Density compensation weights.
-    """
-
-    # Compute midpoints between points
-    midpoints = (x[1:] + x[:-1]) / 2.0
-
-    # Add domain boundaries
-    left, right = domain
-    midpoints = np.concatenate([[left], midpoints, [right]])
-
-    # Calculate Voronoi cell lengths
-    weights_sorted = midpoints[1:] - midpoints[:-1]
-
-    return -weights_sorted
+    x = np.asarray(x, dtype=float)
+    if x.ndim != 1 or x.size < 2:
+        raise ValueError(f"need at least 2 samples along one axis, got shape {x.shape}")
+    step = np.diff(x)
+    if np.all(step < 0):
+        gaps = np.concatenate((-step, [x[-1] - x[0] + period]))
+    elif np.all(step > 0):
+        gaps = np.concatenate((step, [x[0] - x[-1] + period]))
+    else:
+        raise ValueError("samples must be strictly monotonic to have Voronoi cells")
+    return 0.5 * (np.roll(gaps, 1) + gaps)
 
 
 def _default_N_modes(M_samples):
