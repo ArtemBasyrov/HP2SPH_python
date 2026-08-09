@@ -41,9 +41,10 @@ FIGURES_DIR = os.path.join(_REPO_ROOT, "benchmarks", "figures")
 def quiet():
     """Swallow stdout.
 
-    ``src.data_interpolation`` and ``src.nuFFT`` print per-call timing and solver
-    diagnostics. Left alone they interleave with the benchmark's own output and,
-    in the speed benchmark, add IO to the measured region.
+    Kept as a backstop only. ``src.data_interpolation`` and ``src.nuFFT`` used to
+    print per-call timing and solver diagnostics into the measured region; both now
+    use ``logging``, so this catches nothing of ours. It still guards against a
+    third-party library printing inside a timed call.
     """
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):

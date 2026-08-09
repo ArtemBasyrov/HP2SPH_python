@@ -9,7 +9,7 @@ so no environment variables need to be set by hand.
 """
 
 import argparse  # noqa: E402
-import time  # noqa: E402
+import logging  # noqa: E402
 
 # Import the package first: this sets the OpenMP env guards, before any library
 # that links libomp loads. Must precede healpy/numpy/finufft.
@@ -19,13 +19,13 @@ import healpy as hp  # noqa: E402
 import numpy as np  # noqa: E402
 from astropy.io import fits  # noqa: E402
 
-from src.data_interpolation import (  # noqa: E402
-    transform_healpix_to_grid,
-    transform_grid_to_healpix,
+from src.pipeline import (  # noqa: E402
+    forward_C,
+    backward_map,
+    nside_from_C,
 )
-from src.double_fourier_sphere import DFS, DFS_inverse  # noqa: E402
-from src.nuFFT import apply_nuFFT, inverse_nuFFT  # noqa: E402
-from src.FSHT import FSHT, inverse_FSHT  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 def save_to_fits(data, filename):
@@ -33,7 +33,7 @@ def save_to_fits(data, filename):
     hdu_real = fits.PrimaryHDU(np.real(data))
     hdu_imag = fits.ImageHDU(np.imag(data), name="IMAGINARY")
     fits.HDUList([hdu_real, hdu_imag]).writeto(filename, overwrite=True)
-    print(filename + " saved as FITS file")
+    logger.info("%s saved as FITS file", filename)
 
 
 def read_fits(filename):
@@ -65,34 +65,28 @@ def calc_cl(alm, lmax=None):
     return cl
 
 
-def forward(mp: np.array, save: bool = False) -> np.array:
-    """Forward transform: HEALPix map -> spherical-harmonic coefficient array.
+def forward(mp: np.array, save: bool = False, **nufft_kw) -> np.array:
+    """Forward transform: HEALPix intensity map -> coefficient array ``C``.
 
-    ``mp`` is a 3-row (I, Q, U) map; only intensity (I) is transformed. Set
-    ``save=True`` to also dump the result to ``alm_array_cg_<nside>.fits``.
+    ``mp`` is a SINGLE HEALPix map. It used to be a 3-row (I, Q, U) stack of which
+    only I was transformed, which meant every other caller bypassed this function;
+    pass ``mp[0]`` if you have an IQU stack, and use
+    ``src.spin_transform.forward_spin`` for polarization.
+
+    ``nufft_kw`` goes to ``apply_nuFFT``. Set ``save=True`` to also dump the result
+    to ``alm_array_cg_<nside>.fits``.
     """
-    assert mp.shape[0] == 3, (
-        "Input map must have I, Q, U components"
-    )  # temporary limit, Q and U do nothing
-    NSIDE = hp.get_nside(mp[0])
-    upsampled_map, fft_coeff = transform_healpix_to_grid(mp[0])
-
-    start = time.time()
-    _, fft_coeff_DFS = DFS(upsampled_map, fft_coeff)
-    print("DFS time:", time.time() - start)
-
-    start = time.time()
-    fft_lat_nufft = apply_nuFFT(fft_coeff_DFS)
-    print("nuFFT time:", time.time() - start)
-
-    start = time.time()
-    alm = FSHT(fft_lat_nufft)
-    print("FSHT time:", time.time() - start)
-
+    mp = np.asarray(mp)
+    if mp.ndim != 1:
+        raise ValueError(
+            f"forward() takes a single HEALPix map, got shape {mp.shape}. "
+            "Pass mp[0] for the intensity row of an (I, Q, U) stack, or use "
+            "src.spin_transform.forward_spin for polarization."
+        )
+    C = forward_C(mp, **nufft_kw)
     if save:
-        save_to_fits(alm, "alm_array_cg_{0}.fits".format(NSIDE))
-
-    return alm
+        save_to_fits(C, "alm_array_cg_{0}.fits".format(hp.get_nside(mp)))
+    return C
 
 
 def backward(alm: np.array, save: bool = False) -> np.array:
@@ -103,15 +97,12 @@ def backward(alm: np.array, save: bool = False) -> np.array:
     so nside = (rows - 1) // 2. Set ``save=True`` to dump
     ``mp_array_cg_<nside>.fits``.
     """
-    NSIDE = (alm.shape[0] - 1) // 2
-    _, C = inverse_FSHT(alm, NSIDE)
-    fft_lat = inverse_nuFFT(C)
-    fft_coeff = DFS_inverse(fft_lat)
-    mp = transform_grid_to_healpix(fft_coeff, fft_coeff)
+    NSIDE = nside_from_C(alm)
+    mp = backward_map(alm, NSIDE)
 
     if save:
         hp.write_map("mp_array_cg_{0}.fits".format(NSIDE), mp, overwrite=True)
-        print("mp_array_cg_{0}.fits saved".format(NSIDE))
+        logger.info("mp_array_cg_%d.fits saved", NSIDE)
 
     return mp
 
@@ -136,15 +127,25 @@ def main():
         action="store_true",
         help="Write intermediate alm / map FITS files to the current directory.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log per-stage debug timings.",
+    )
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
     for filename in args.maps:
-        print(filename, "being processed")
-        mp = hp.read_map(filename, field=(0, 1, 2))
-        alm = forward(mp, save=args.save)
+        logger.info("%s being processed", filename)
+        mp = hp.read_map(filename, field=0)  # intensity only; see forward()
+        C = forward(mp, save=args.save)
         if args.roundtrip:
-            backward(alm, save=args.save)
-        print()
+            backward(C, save=args.save)
 
 
 if __name__ == "__main__":

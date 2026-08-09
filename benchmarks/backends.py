@@ -32,12 +32,12 @@ import healpy as hp
 from benchmarks.common import quiet
 from src.FSHT import to_healpy_alm, from_healpy_alm
 from src.spin_transform import forward_spin, backward_spin
-from tests.pipeline_helpers import forward_C, backward_map
+from src.pipeline import forward_C, backward_map
 
-# ``tests.pipeline_helpers`` is the repo's side-effect-free wiring of the four
-# pipeline stages (``main.forward`` does FITS IO and prints). Importing it here
-# rather than copying those six lines keeps the benchmark measuring the same
-# composition the test suite pins.
+# ``src.pipeline`` is the repo's side-effect-free wiring of the four pipeline
+# stages -- the same composition ``main.forward`` wraps with FITS I/O and the same
+# one the test suite pins. This used to import from ``tests.pipeline_helpers``,
+# which put production code behind a test module.
 
 
 # --------------------------------------------------------------------------- #
