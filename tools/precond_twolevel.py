@@ -35,6 +35,18 @@ nside 8 / 16 / 32 / 64.  A sparse LU fills in by only 1.08x to 1.41x, so the coa
 solve is a sparse triangular pair rather than a dense O(R^2) one, and E is never
 materialised densely.  Note that this is EXACT.  Thresholding E instead destroys
 positive definiteness and fails outright at nside 64 (fix_pass_3.md section 8).
+
+Scaling.  R ~ 0.88 * nside^2 and the density stays near 13%, so the exact matrix is
+about 7 GB at nside 256 and 111 GB at nside 512.  ``taper`` fixes that safely: E is a
+CONGRUENCE of the positive semi-definite D, so replacing the Dirichlet kernel G by any
+symmetric G~ keeps E positive semi-definite.  Tapering G to a radius delta (in radians)
+bands E in latitude and prunes the assembly to group pairs within 2*delta.  The quality
+depends on the ANGLE, not on a count of resolution cells: delta = 0.785 reproduces the
+exact iteration count at nside 32 and 64 while cutting nnz per row 3.4x, and is FASTER
+than the exact solve because the factor is smaller.  ``taper`` is quoted in units of the
+band-limit resolution pi / L, so taper = delta * 2 * nside / pi.  This buys about 4x, not
+an asymptotic change: see fix_pass_3.md section 7 for the resolution-dependent
+recommendation.
 """
 
 import numpy as np
@@ -112,8 +124,61 @@ def _interacting(target, gcols):
     return inter
 
 
+def _near_partners(gidx, rows, x, radius):
+    """For each group, the groups g' >= g having a row within ``radius`` in latitude.
+
+    Replaces the O(P^2) interaction matrix when the kernel is tapered: a tapered block
+    is identically zero unless the two groups have rows that close together.
+    """
+    P = len(gidx)
+    owner = np.concatenate([np.full(len(gidx[g]), g) for g in range(P)])
+    xs = x[rows[np.concatenate(gidx)]]
+    order = np.argsort(xs)
+    xs_s, owner_s = xs[order], owner[order]
+    period = 2.0 * np.pi
+    ext_x = np.concatenate([xs_s - period, xs_s, xs_s + period])
+    ext_o = np.concatenate([owner_s, owner_s, owner_s])
+    out = []
+    for g in range(P):
+        gx = x[rows[gidx[g]]]
+        lo = np.searchsorted(ext_x, gx.min() - radius, "left")
+        hi = np.searchsorted(ext_x, gx.max() + radius, "right")
+        cand = np.unique(ext_o[lo:hi])
+        out.append(cand[cand >= g])
+    return out
+
+
+def _support_rows(gidx, rows, x, delta):
+    """Rows on which a group's tapered kernel is nonzero, one sorted array per group."""
+    order = np.argsort(x)
+    xs = x[order]
+    period = 2.0 * np.pi
+    ext_x = np.concatenate([xs - period, xs, xs + period])
+    ext_i = np.concatenate([order, order, order])
+    out = []
+    for g in range(len(gidx)):
+        gx = x[rows[gidx[g]]]
+        idx = []
+        for v in gx:
+            lo = np.searchsorted(ext_x, v - delta, "left")
+            hi = np.searchsorted(ext_x, v + delta, "right")
+            idx.append(ext_i[lo:hi])
+        out.append(np.unique(np.concatenate(idx)))
+    return out
+
+
 def closed_form_E(
-    nside, spin, tol, rows, cols, coeffs, plan, norm, sparse=True, row_weight=None
+    nside,
+    spin,
+    tol,
+    rows,
+    cols,
+    coeffs,
+    plan,
+    norm,
+    sparse=True,
+    row_weight=None,
+    taper=None,
 ):
     """E = Z^H N Z without a single NUFFT, assembled block by block.
 
@@ -135,12 +200,35 @@ def closed_form_E(
     # operator it is a Galerkin of.
     wD = w if row_weight is None else w * np.asarray(row_weight, dtype=float)
     G = _dirichlet(x, 2 * nside)
+    delta = None if taper is None else taper * np.pi / (2 * nside)
+    if taper is not None:
+        # E = (G W Psi)^H D (G W Psi) is a CONGRUENCE of the positive semi-definite D,
+        # so replacing G by ANY symmetric G~ leaves E positive semi-definite.  Tapering
+        # the Dirichlet kernel to a finite radius therefore sparsifies E without the
+        # loss of definiteness that thresholding the assembled E causes: a block can
+        # only be nonzero if some collision row lies within the radius of BOTH
+        # generators, which bands E in latitude.
+        du = np.abs(x[:, None] - x[None, :])
+        du = np.minimum(du, 2 * np.pi - du)
+        G = G * np.where(du < delta, np.cos(0.5 * np.pi * du / delta) ** 2, 0.0)
     R = len(rows)
     M = len(x)
     ar = np.arange(M)
 
     gidx, gcols = _groups(rows, cols, coeffs)
-    inter = _interacting(target, gcols)
+    if taper is None:
+        inter = _interacting(target, gcols)
+        partners = [np.nonzero(inter[g, g:])[0] + g for g in range(len(gidx))]
+    else:
+        # With a tapered kernel a block can only be nonzero if some collision row lies
+        # within delta of BOTH generators, hence only if the two groups have rows within
+        # 2 * delta of each other.  Enumerating those directly replaces the O(P^2)
+        # interaction matrix, which is what makes the assembly affordable at high nside.
+        partners = _near_partners(gidx, rows, x, 2.0 * delta)
+        # rows on which each group's tapered kernel is nonzero; a block only ever needs
+        # the INTERSECTION of the two groups' windows, which is what keeps the assembly
+        # cost independent of M rather than linear in it.
+        window = _support_rows(gidx, rows, x, delta)
 
     # per group column: the row-indexed target / phase / keep it carries
     tgt = {c: target[:, c] for cs in gcols for c in cs}
@@ -152,16 +240,23 @@ def closed_form_E(
 
     for gi in range(len(gidx)):
         ig, ci = gidx[gi], gcols[gi]
-        Gi = G[:, rows[ig]]
-        for gj in np.nonzero(inter[gi, gi:])[0] + gi:
+        for gj in partners[gi]:
             jg, cj = gidx[gj], gcols[gj]
-            Gj = G[:, rows[jg]]
+            if taper is None:
+                sel = slice(None)
+            else:
+                sel = np.intersect1d(window[gi], window[gj], assume_unique=True)
+                if sel.size == 0:
+                    continue
+            Gi = G[sel][:, rows[ig]]
+            Gj = G[sel][:, rows[jg]]
+            wDs = wD[sel]
             blk = np.zeros((len(ig), len(jg)), dtype=complex)
             hit = False
             for a, ca in enumerate(ci):
-                Ta, Pa, Ka = tgt[ca], pha[ca], kep[ca]
+                Ta, Pa, Ka = tgt[ca][sel], pha[ca][sel], kep[ca][sel]
                 for bq, cb in enumerate(cj):
-                    K = wD * np.conj(Pa) * pha[cb] * (Ta == tgt[cb]) * Ka
+                    K = wDs * np.conj(Pa) * pha[cb][sel] * (Ta == tgt[cb][sel]) * Ka
                     if not np.any(K):
                         continue
                     hit = True
@@ -171,6 +266,9 @@ def closed_form_E(
                         * coeffs[jg, bq][None, :]
                     )
             if not hit:
+                continue
+            if taper is not None and not np.any(blk):
+                # the taper can annihilate a block that is structurally present
                 continue
             blk *= np.outer(w[rows[ig]], w[rows[jg]]) / norm
             if sparse:
@@ -209,6 +307,7 @@ class TwoLevel:
         sparse=True,
         row_weight=None,
         ridge=1e-8,
+        taper=None,
     ):
         self.nside = nside
         self.n_trans = n_trans or 4 * nside
@@ -254,6 +353,7 @@ class TwoLevel:
                 norm,
                 sparse=sparse,
                 row_weight=row_weight,
+                taper=taper,
             )
         self.E = E
         if sp.issparse(E):
