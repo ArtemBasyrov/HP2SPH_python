@@ -180,3 +180,187 @@ def test_pin_does_not_rescan_once_warm():
     finally:
         _openmp._image_names = original
     assert calls == [], f"rescanned {len(calls)} times on the warm path"
+
+
+# --- threading works, and gives the same answer -----------------------------------
+#
+# The tests above pin the GUARD: threading is REFUSED when several OpenMP runtimes are
+# loaded. They are equally happy when threading is refused forever, so on their own they
+# cannot tell a healthy single-runtime stack from a broken one. The tests below cover the
+# other half: where threading is possible it must actually happen, and it must not change
+# the numbers.
+#
+# The failure mode they exist for: ``ft_sphere`` resolves ``FASTTRANSFORMS_LIB``, then a
+# repo ``lib/``, then the active environment. If either override points at a build linked
+# against a different OpenMP runtime from the rest of the stack, that runtime is loaded
+# too, ``_openmp.pin`` refuses to thread, and the pipeline silently stays single-threaded
+# on a machine that was set up for threads.
+#
+# Where threading is legitimately impossible -- for instance a wheels-only stack in which
+# healpy and finufft each vendor their own libomp -- these skip rather than fail, because
+# that is a property of how the stack was built, not a defect in this repo.
+
+_RUNTIME_REPORT = """
+import sys, contextlib, io
+sys.path.insert(0, {root!r})
+import numpy as np, healpy as hp
+from src import _openmp
+print("BEFORE", len(_openmp.runtime_paths()))
+import src.ft_sphere  # noqa: F401  -- this is what resolves FASTTRANSFORMS_LIB
+print("AFTER", len(_openmp.runtime_paths()))
+from tests.pipeline_helpers import forward_C
+mp = hp.alm2map(np.zeros(hp.Alm.getsize(32), dtype=complex) + 1.0, nside=16, lmax=32)
+with contextlib.redirect_stdout(io.StringIO()):
+    C = np.asarray(forward_C(mp))
+np.save({out!r}, C)
+print("RUNTIMES", len(_openmp.runtime_paths()))
+print("PREFIX", sys.prefix)
+for p in _openmp.runtime_paths():
+    print("OMP", p)
+for p in _openmp.loaded_images()[1]:
+    if "fasttransforms" in p.lower():
+        print("FT", p)
+print("OK")
+"""
+
+
+_PROBE = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("_omp_probe", {probe!r})
+_omp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(_omp)
+import numpy, healpy, finufft  # the deps that legitimately carry their own libomp
+{extra}
+print("RUNTIMES", len(_omp.runtime_paths()))
+for p in _omp.runtime_paths():
+    print("OMP", p)
+print("OK")
+"""
+
+
+def _run_probe(extra=""):
+    """Count OpenMP runtimes with and without libfasttransforms in the process."""
+    env = dict(os.environ)
+    for key in ("OMP_NUM_THREADS", "KMP_DUPLICATE_LIB_OK", "HP2SPH_OMP_THREADS"):
+        env.pop(key, None)
+    script = _PROBE.format(
+        probe=os.path.join(REPO_ROOT, "src", "_openmp.py"), extra=extra
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT_S,
+    )
+
+
+def _run_report(out_path, **env_overrides):
+    env = dict(os.environ)
+    for key in ("OMP_NUM_THREADS", "KMP_DUPLICATE_LIB_OK", "HP2SPH_OMP_THREADS"):
+        env.pop(key, None)
+    env.update(env_overrides)
+    script = _RUNTIME_REPORT.format(root=REPO_ROOT, out=str(out_path))
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            f"the transform hung for {TIMEOUT_S}s with env {env_overrides} -- a "
+            "threaded deadlock is exactly what src/_openmp.py exists to prevent"
+        )
+    return result
+
+
+def _parse(result):
+    fields = {"OMP": [], "FT": []}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key in ("OMP", "FT"):
+            fields[key].append(value)
+        elif key in ("RUNTIMES", "PREFIX", "BEFORE", "AFTER"):
+            fields[key] = value
+    return fields
+
+
+@pytest.mark.ft
+def test_libfasttransforms_does_not_add_an_openmp_runtime():
+    """Whichever copy is resolved, it must share the runtime already in the process.
+
+    This is the failure the suite used to miss, and it must be caught however the
+    library is selected -- so the invariant is not "the copy comes from the active
+    environment" (pointing ``FASTTRANSFORMS_LIB`` elsewhere is a documented override)
+    but "loading it does not INCREASE the OpenMP runtime count". That holds however the
+    stack was built, and fails only for a library linked against a runtime nothing else
+    in the process uses -- which is what makes threading unavailable.
+
+    The baseline has to be a SEPARATE process: ``src/__init__.py`` imports ``FSHT``,
+    which imports ``ft_sphere``, so any ``src`` import has already loaded the library.
+    The probe therefore loads ``src/_openmp.py`` by path, bypassing the package.
+    """
+    from src import _openmp
+
+    if not _openmp.loaded_images()[1]:
+        pytest.skip(f"no loaded-image probe for {sys.platform}")
+    base = _run_probe()
+    assert base.returncode == 0, base.stderr[-2000:]
+    with_ft = _run_probe(extra="import src.ft_sphere  # noqa: F401")
+    assert with_ft.returncode == 0, with_ft.stderr[-2000:]
+    before = int(_parse(base)["RUNTIMES"])
+    after = int(_parse(with_ft)["RUNTIMES"])
+    assert after == before, (
+        f"importing src.ft_sphere took the OpenMP runtime count from {before} to "
+        f"{after}, so it links an OpenMP runtime nothing else in the process uses "
+        "and _openmp.pin will refuse to thread. Check FASTTRANSFORMS_LIB and any repo "
+        "lib/ directory -- both are resolved BEFORE the active environment.\n"
+        + "\n".join(_parse(with_ft)["OMP"])
+    )
+
+
+@pytest.mark.ft
+def test_threading_is_usable_when_one_runtime_is_loaded(tmp_path):
+    """Threading must not merely be *refused safely* -- where possible it must WORK."""
+    from src import _openmp
+
+    if not _openmp.loaded_images()[1]:
+        pytest.skip(f"no loaded-image probe for {sys.platform}")
+    if len(_openmp.runtime_paths()) != 1:
+        pytest.skip("this stack has several OpenMP runtimes; threading is refused")
+    result = _run_report(tmp_path / "c.npy", HP2SPH_OMP_THREADS="auto")
+    _check(result)
+    assert _parse(result)["RUNTIMES"] == "1", (
+        "a threaded run pulled in a second OpenMP runtime:\n"
+        + "\n".join(_parse(result)["OMP"])
+    )
+
+
+@pytest.mark.ft
+def test_threaded_output_matches_single_threaded(tmp_path):
+    """Threads are a speed change, so they must not move a digit.
+
+    Not asserted bit-for-bit: the reductions inside finufft and libfasttransforms
+    reassociate with the thread count, so the two agree to a few ulp rather than
+    exactly. The tolerance is loose enough for that and far tighter than any real
+    regression.
+    """
+    from src import _openmp
+
+    if not _openmp.loaded_images()[1]:
+        pytest.skip(f"no loaded-image probe for {sys.platform}")
+    if len(_openmp.runtime_paths()) != 1:
+        pytest.skip("this stack has several OpenMP runtimes; threading is refused")
+    one, many = tmp_path / "one.npy", tmp_path / "many.npy"
+    _check(_run_report(one, HP2SPH_OMP_THREADS="1"))
+    _check(_run_report(many, HP2SPH_OMP_THREADS="auto"))
+    import numpy as np
+
+    a, b = np.load(one), np.load(many)
+    assert a.shape == b.shape
+    assert np.linalg.norm(b - a) <= 1e-12 * np.linalg.norm(a)
