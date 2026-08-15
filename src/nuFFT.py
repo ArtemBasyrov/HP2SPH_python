@@ -177,8 +177,19 @@ def _fold_ops(fold, n_trans, M_samples):
     families -- and ``adjoint`` is the matching gather, so the pair is an exact adjoint
     (checked to 1.6e-15) and LSMR/CG stay valid.
 
-    Both work on the ``(n_trans, M_samples)`` layout the solvers use. ``np.bincount`` (not
-    ``np.add.at``) does the scatter: same result, ~10x faster.
+    Both work on the ``(n_trans, M_samples)`` layout the solvers use, and both RETURN
+    that layout C-contiguous, so the callers' ``np.ascontiguousarray`` is a no-op.
+
+    This used to index in the ``(M_samples, n_trans)`` layout, which cost a transpose on
+    the way in and another on the way out, and it scattered ``t.real`` and ``t.imag``
+    separately -- two ``bincount`` passes over stride-16 views of a complex array.
+    Building the index in the solver's own layout and scattering ONCE over the buffer
+    viewed as interleaved float64 is bit-identical (0.0 on both directions, adjointness
+    1.5e-14) and 2.0-2.4x faster; with the copy the callers no longer need, apply goes
+    27.9 ms to 8.3 ms at nside 256. The fold was 34.6% of a matrix-vector product before
+    this (``tools/precond_diagnostics/d37_iter_cost.py``, ``d38_fold_fast.py``).
+
+    ``np.bincount`` (not ``np.add.at``) does the scatter: same result, ~10x faster.
     """
     if fold is None:
         return None, None
@@ -188,21 +199,179 @@ def _fold_ops(fold, n_trans, M_samples):
         raise ValueError(
             f"fold arrays must be ({M_samples}, {n_trans}), got {target.shape}"
         )
-    flat = (target + n_trans * np.arange(M_samples)[:, None]).ravel()
-    conj_phase = np.conj(phase)
     size = M_samples * n_trans
+    # (column c, row r) sits at c * M + r in a C-contiguous (n_trans, M) buffer and
+    # scatters onto (target[r, c], r), i.e. target[r, c] * M + r.
+    flat = (
+        (target.T * M_samples + np.arange(M_samples)[None, :]).astype(np.intp).ravel()
+    )
+    pair = np.empty(2 * size, dtype=np.intp)
+    pair[0::2] = 2 * flat
+    pair[1::2] = 2 * flat + 1
+    phase_t = np.ascontiguousarray(phase.T)
+    conj_phase_t = np.ascontiguousarray(np.conj(phase.T))
 
     def apply(model):
-        t = (model.T * phase).ravel()
-        folded = np.bincount(flat, weights=t.real, minlength=size).astype(complex)
-        folded += 1j * np.bincount(flat, weights=t.imag, minlength=size)
-        return folded.reshape(M_samples, n_trans).T
+        t = model * phase_t
+        acc = np.bincount(pair, weights=t.view(np.float64).ravel(), minlength=2 * size)
+        return acc.view(np.complex128).reshape(n_trans, M_samples)
 
     def adjoint(residual):
-        gathered = residual.T.ravel()[flat].reshape(M_samples, n_trans)
-        return (gathered * conj_phase).T
+        gathered = residual.reshape(-1)[flat].reshape(n_trans, M_samples)
+        return gathered * conj_phase_t
 
     return apply, adjoint
+
+
+def _mirror_plan(x, spin, n_trans, N_modes, tol=1e-9):
+    """Half-domain plan from the DFS mirror symmetry, or ``None``.
+
+    The DFS doubling makes the latitude samples closed under ``x -> -x`` with the two
+    poles as fixed points, and makes the array obey ``d[mu(r), c] = parity[c] d[r, c]``
+    with ``parity = (-1)^(m + spin)``. The latitude coefficients then obey
+    ``c_{-k} = parity[c] c_k``, so the whole least squares restricts to ``4*nside + 1``
+    rows instead of ``8*nside`` and ``2*nside + 1`` coefficients per column instead of
+    ``4*nside + 1``. This is an EXACT restructuring: the minimiser of the full problem
+    already satisfies the symmetry.
+
+    Returns ``(mu, rows, mult, parity, scale, even)``.
+
+    Two details are load-bearing.  ``c_{-k} = -c_k`` forces ``c_0 = 0`` on odd-parity
+    columns, so ``even`` pins that slot; writing it for every column makes the embedded
+    vector asymmetric and the half operator disagrees with the full one by 52%.  And the
+    embedding must be an ISOMETRY -- a coefficient with ``k >= 1`` feeds both ``+k`` and
+    ``-k``, so it carries ``1/sqrt(2)`` -- otherwise ``P^H N P`` has a different spectrum
+    from ``N`` on the symmetric subspace and CG needs 257 iterations instead of 115 at
+    nside 64, i.e. a cheaper product and a slower solve.
+    """
+    if spin is None or N_modes % 2 == 0:
+        return None
+    M = len(x)
+    xx = np.mod(x, 2 * np.pi)
+    xm = np.mod(-x, 2 * np.pi)
+    order = np.argsort(xx)
+    xs = xx[order]
+    pos = np.searchsorted(xs, xm)
+    c0, c1 = (pos - 1) % M, pos % M
+
+    def circ(a, b):
+        d = np.abs(a - b)
+        return np.minimum(d, 2 * np.pi - d)
+
+    d0, d1 = circ(xs[c0], xm), circ(xs[c1], xm)
+    mu = order[np.where(d0 <= d1, c0, c1)]
+    if np.minimum(d0, d1).max() > tol:
+        return None  # the sample set is not closed under the involution
+    idx = np.arange(M)
+    if not np.array_equal(mu[mu], idx):
+        return None
+    rows = np.nonzero(idx <= mu)[0]
+    mult = np.where(mu[rows] == rows, 1.0, 2.0)
+    m = np.arange(n_trans) - n_trans // 2
+    parity = ((-1.0) ** (m + spin)).astype(float)
+    K = (N_modes - 1) // 2
+    scale = np.full(K + 1, 1.0 / np.sqrt(2.0))
+    scale[0] = 1.0
+    even = (parity > 0).astype(float)
+    return mu, rows, mult, parity, scale, even
+
+
+def _is_mirror_symmetric(f_samples, mu, parity, rtol=1e-8):
+    """Does the data obey ``d[mu(r), c] = parity[c] d[r, c]``?
+
+    ``cg_nufft_forward`` is handed a bare array, so this is checked rather than assumed;
+    an asymmetric input falls back to the full domain instead of being silently
+    symmetrised. One pass over the array, about 2% of a single matrix-vector product.
+    """
+    scale = np.abs(f_samples).max()
+    if scale == 0.0:
+        return True
+    diff = np.abs(f_samples[:, mu] - parity[:, None] * f_samples).max()
+    return diff <= rtol * scale
+
+
+def _cg_nufft_forward_half(
+    x, f_samples, N_modes, plan_half, rtol, maxiter, eps, sample_mask, fold
+):
+    """``cg_nufft_forward`` restricted to the mirror-symmetric subspace."""
+    mu, rows, mult, parity, scale, even = plan_half
+    n_trans, M_samples = f_samples.shape
+    Mh = len(rows)
+    K = (N_modes - 1) // 2
+
+    plan_forward = finufft.Plan(
+        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128, eps=eps
+    )
+    plan_adjoint = finufft.Plan(
+        1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128, eps=eps
+    )
+    xh = np.ascontiguousarray(x[rows])
+    plan_forward.setpts(xh)
+    plan_adjoint.setpts(xh)
+
+    # A mirrored row contributes exactly what its partner does, so dropping it and
+    # doubling the partner's weight leaves the least squares (and ``norm``) unchanged.
+    w = compute_voronoi_weights_1d(x)[rows] * mult
+    if sample_mask is None:
+        weights = w
+        norm = np.sum(w)
+    else:
+        mask = np.asarray(sample_mask, dtype=float)
+        if mask.shape == (M_samples, n_trans):
+            mask = mask.T
+        if mask.shape != (n_trans, M_samples):
+            raise ValueError(
+                f"sample_mask must be ({n_trans}, {M_samples}) or its transpose, "
+                f"got {np.shape(sample_mask)}"
+            )
+        weights = w[None, :] * mask[:, rows]
+        norm = weights.sum(axis=1, keepdims=True)
+        if fold is not None:
+            norm = norm.mean()
+        elif np.any(norm == 0):
+            raise ValueError("sample_mask leaves a longitude mode with no samples")
+
+    fold_h = None if fold is None else (fold[0][rows], fold[1][rows])
+    fold_apply, fold_adjoint = _fold_ops(fold_h, n_trans, Mh)
+
+    full = np.zeros((n_trans, N_modes), dtype=np.complex128)
+    gbuf = np.zeros((n_trans, Mh), dtype=np.complex128)
+    obuf = np.zeros((n_trans, N_modes), dtype=np.complex128)
+    par = parity[:, None]
+
+    def expand(ch):
+        cs = ch * scale
+        full[:, K:] = cs
+        full[:, K] *= even
+        full[:, :K] = par * cs[:, :0:-1]
+        return full
+
+    def restrict(fl):
+        out = fl[:, K:].copy()
+        out[:, 1:] += par * fl[:, K - 1 :: -1]
+        out *= scale
+        out[:, 0] *= even
+        return out
+
+    def adjoint_of(samples):
+        y = samples * weights
+        if fold_adjoint is not None:
+            y = fold_adjoint(y)
+        plan_adjoint.execute(np.ascontiguousarray(y), obuf)
+        return (restrict(obuf) / norm).ravel()
+
+    def apply_AHA(vec):
+        plan_forward.execute(expand(vec.reshape(n_trans, K + 1)), gbuf)
+        y = fold_apply(gbuf) if fold_apply is not None else gbuf
+        return adjoint_of(y)
+
+    rhs = adjoint_of(np.ascontiguousarray(f_samples[:, rows]))
+    n_half = n_trans * (K + 1)
+    A = LinearOperator(shape=(n_half, n_half), matvec=apply_AHA, dtype=np.complex128)
+    sol, info = cg(
+        A, rhs, x0=np.zeros(n_half, dtype=np.complex128), rtol=rtol, maxiter=maxiter
+    )
+    return expand(sol.reshape(n_trans, K + 1)).copy().T, info
 
 
 def lsmr_nufft_forward(
@@ -299,12 +468,26 @@ def cg_nufft_forward(
     eps=1e-12,
     sample_mask=None,
     fold=None,
+    spin=None,
 ):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
     M_samples = f_samples.shape[1]  # = 8*nside (number of latitude samples)
     if N_modes is None:
         N_modes = _default_N_modes(M_samples)
+
+    # With ``spin`` known, the DFS mirror symmetry halves both the latitude samples and
+    # the unknowns at no cost in accuracy -- same iteration count, same answer to ~7e-15,
+    # 1.5-1.65x wall from nside 32 to 256 (see ``_mirror_plan``). The symmetry of the
+    # DATA is checked rather than assumed, so an array that does not have it falls back
+    # to the full domain below.
+    plan_half = _mirror_plan(x, spin, n_trans, N_modes)
+    if plan_half is not None and _is_mirror_symmetric(
+        f_samples, plan_half[0], plan_half[3]
+    ):
+        return _cg_nufft_forward_half(
+            x, f_samples, N_modes, plan_half, rtol, maxiter, eps, sample_mask, fold
+        )
 
     # Precompute NUFFT plans with batch processing (n_trans transforms)
     plan_forward = finufft.Plan(
@@ -483,6 +666,7 @@ def apply_nuFFT(
     rcond: float = 1e-13,
     sample_mask=None,
     fold=None,
+    spin=None,
 ) -> np.ndarray:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
@@ -584,6 +768,7 @@ def apply_nuFFT(
             eps=eps,
             sample_mask=sample_mask,
             fold=fold,
+            spin=spin,
         )
         if info != 0:
             logger.warning("CG did not converge (info=%s)", info)

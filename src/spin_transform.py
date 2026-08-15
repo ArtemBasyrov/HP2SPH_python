@@ -132,6 +132,7 @@ def _spin_F_hp2sph(Q, U, spin, alias_tol=ALIAS_TOL, rtol=ALIAS_RTOL):
         fold=(target, phase),
         rtol=rtol,
         maxiter=CG_MAXITER,
+        spin=spin,
     )
     return FSHT_spin(fft_lat, spin)
 

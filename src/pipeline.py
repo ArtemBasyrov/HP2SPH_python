@@ -36,6 +36,9 @@ def forward_C(healpix_map, **nufft_kw):
     """
     upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
     _, fft_coeff_dfs = DFS(upsampled, fft_coeff)
+    # spin=0 lets the CG path use the DFS mirror symmetry (see nuFFT._mirror_plan); it is
+    # ignored by the other solvers and falls back if the array is not symmetric.
+    nufft_kw.setdefault("spin", 0)
     fft_lat = apply_nuFFT(fft_coeff_dfs, **nufft_kw)
     return FSHT(fft_lat)
 
