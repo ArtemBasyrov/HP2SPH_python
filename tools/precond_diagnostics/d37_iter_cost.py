@@ -1,6 +1,7 @@
 """D37: where does one CG iteration actually go?
 
-The iteration COUNT is flat at 80-90 above nside 64 (fix_pass_3.md section 7.1), so at
+The iteration COUNT is flat at 80-90 above nside 64 (measured 151 / 115 / 92 / 81 at
+nside 32 / 64 / 128 / 256, i.e. it peaks at nside 32 and falls), so at
 high nside the only thing left to attack is the cost of one matrix-vector product.
 Break it into its five pieces before optimising any of them:
 

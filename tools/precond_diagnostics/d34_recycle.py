@@ -1,7 +1,8 @@
 """D34: Krylov recycling -- harvest Ritz vectors from one solve, reuse on the next map.
 
 Every attempt to SHRINK the coarse space failed because the near-null space is
-collectively near-null (fix_pass_3.md section 8).  Recycling is a different claim: the
+collectively near-null: span(Z) needs about 400 of its 1366 directions at nside 32
+before deflation helps at all.  Recycling is a different claim: the
 RIGHT-HAND SIDE only excites part of that space, and section 7.1 shows it excites less
 of it as nside grows (the plain count falls from 151 at nside 32 to 81 at nside 256).
 So a few dozen directions harvested from an actual solve may carry most of the benefit.

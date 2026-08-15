@@ -3,8 +3,9 @@
 nnz(E) = 0.13 R^2 with R ~ nside^2, so the exact sparse factorisation is O(n^2) memory:
 30 M nonzeros at nside 128, ~6 GB at nside 256.  Unusable where HP2SPH is meant to win.
 
-Thresholding E and factorising it EXACTLY fails (fix_pass_3.md section 8) because
-dropping entries from a Hermitian matrix does not preserve positive definiteness.  FSAI
+Thresholding E and factorising it EXACTLY fails -- 793 iterations at nside 64, worse
+than no preconditioner -- because dropping entries from a Hermitian matrix does not
+preserve positive definiteness.  FSAI
 (Kolotilina & Yeremin) does not have that failure mode: it builds a sparse lower
 triangular G with M^-1 = G^H G, which is positive definite for ANY pattern, and it only
 ever reads the entries of E inside that pattern -- so the full E never has to exist.

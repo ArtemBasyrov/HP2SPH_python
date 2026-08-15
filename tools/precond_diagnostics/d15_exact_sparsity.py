@@ -1,9 +1,9 @@
 """D15: is E EXACTLY sparse, and does a sparse direct factorisation of it fit?
 
-E_ij is nonzero only if generators i and j touch longitude columns that collide on some
-latitude row.  That is a combinatorial condition, not a decay condition, so E should have
+E_ij is nonzero only if generators i and j touch longitude columns that collide on
+some latitude row.  That is a combinatorial condition, not a decay condition, so E should have
 STRUCTURAL zeros -- and exploiting those is exact, unlike thresholding, which is what
-broke positive definiteness at nside 64 (fix_pass_3.md section 8).
+broke positive definiteness at nside 64 (793 iterations, worse than none).
 """
 
 import sys, time

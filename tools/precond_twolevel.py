@@ -34,7 +34,8 @@ decay condition: 23.3% / 18.4% / 14.3% / 12.9% of entries are structurally nonze
 nside 8 / 16 / 32 / 64.  A sparse LU fills in by only 1.08x to 1.41x, so the coarse
 solve is a sparse triangular pair rather than a dense O(R^2) one, and E is never
 materialised densely.  Note that this is EXACT.  Thresholding E instead destroys
-positive definiteness and fails outright at nside 64 (fix_pass_3.md section 8).
+positive definiteness and fails outright at nside 64 (measured: 793 iterations,
+worse than no preconditioner at all).
 
 Scaling.  R ~ 0.88 * nside^2 and the density stays near 13%, so the exact matrix is
 about 7 GB at nside 256 and 111 GB at nside 512.  ``taper`` fixes that safely: E is a
@@ -45,8 +46,10 @@ depends on the ANGLE, not on a count of resolution cells: delta = 0.785 reproduc
 exact iteration count at nside 32 and 64 while cutting nnz per row 3.4x, and is FASTER
 than the exact solve because the factor is smaller.  ``taper`` is quoted in units of the
 band-limit resolution pi / L, so taper = delta * 2 * nside / pi.  This buys about 4x, not
-an asymptotic change: see fix_pass_3.md section 7 for the resolution-dependent
-recommendation.
+an asymptotic change. nnz per row still grows about as nside^1.7, so the exact matrix
+suits nside <= 128, the tapered one reaches nside 256, and above that no coarse
+matrix fits -- but the unpreconditioned iteration count is flat at 80-90 there, so
+the cost of one matrix-vector product is what to attack instead.
 """
 
 import numpy as np
