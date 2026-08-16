@@ -21,17 +21,25 @@ rules, which can be combined:
 See ``solve`` for the identity that makes the data residual free, and the caveats
 section for what these rules do and do not guarantee.
 
-Caveats
--------
-``level`` implements Morozov's discrepancy principle, for which CG on the normal
-equations has classical order-optimality results (Nemirovskii 1986; Hanke 1995;
-Hansen 1998 ch. 6). Those results assume the error level is KNOWN.
+Choosing between ``level`` and ``eta``
+-------------------------------------
+``level`` is Morozov's discrepancy principle, for which CG on the normal equations has
+order-optimality results (Nemirovskii 1986; Neubauer 2022). Use it when the error is
+known well enough to bound. Where the error is in the OPERATOR rather than in the data,
+the level those results ask for is
 
-``eta`` does not have that backing. It estimates the level from the iteration's own
-stagnation, which places it with the heuristic rules for an unknown noise level
-(Hanke-Raus, generalised cross-validation, the L-curve) rather than with the
-discrepancy principle proper. It is motivated by the theory and calibrated by
-measurement, not certified by a theorem.
+    ||b - A_h x_k||  <=  Theta * ( h * ||x_k|| + eps )
+
+with ``h`` bounding the operator perturbation, ``eps`` the data noise, and
+``Theta > 1``. Note the ``||x_k||`` factor and that ``h`` covers the WHOLE perturbation,
+including any discretisation or band truncation, not just the part one happens to have
+a tolerance for.
+
+``eta`` is for when no such bound is available. It stops once the data residual reaches
+its own floor, which is an estimate of the same level from the iteration itself. This
+does not inherit the rate guarantee: those results require ``h`` known in advance and
+``Theta`` strictly above 1, whereas stagnation puts the stop at ``Theta`` of about 1.
+Calibrate it by measurement on the problem at hand.
 """
 
 import numpy as np
@@ -89,7 +97,9 @@ def cg_normal_equations(
         Iteration cap. ``None`` means ``10 * len(rhs)``.
     level : float or None
         Stop at the first iterate with ``||b - A x_k||_W <= level``. Use the size of
-        the error in the data or in the forward model. ``None`` disables it.
+        the error in the data or in the forward model; see the module docstring for the
+        form the regularisation literature asks for when the error is in the operator.
+        ``None`` disables it.
     eta : float or None
         Stop at the first ``k >= delay`` whose squared data residual has fallen by
         less than a fraction ``eta`` over the preceding ``delay`` iterations, i.e.

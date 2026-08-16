@@ -168,6 +168,58 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
     return f_hat, 0
 
 
+def nyquist_discrepancy(mp: np.ndarray) -> float:
+    """How badly the longitude grid cannot represent its own Nyquist mode.
+
+    The ``4*nside``-point longitude grid gives modes ``m = +2*nside`` and
+    ``m = -2*nside`` the same slot, and the HEALPix rings do not agree on their relative
+    phase: a ring whose first pixel sits at ``phi0`` sees them combined as
+    ``c_-(theta) + c_+(theta) * exp(i * 4*nside * phi0)``, and ``phi0`` alternates
+    between ``0`` and ``pi/(4*nside)`` along the equatorial belt, so the sign of the
+    second term flips from one ring to the next. A single latitude column can carry
+    ``c_-`` or ``c_+`` but not both, so ``c_+`` cannot be fitted at all.
+
+    That makes ``c_+`` an irreducible error in the forward model, and it is what stops
+    the latitude least squares from reaching zero residual. This returns an estimate of
+    its size, in the same weighted norm the solver's residual uses, so it can be passed
+    to ``apply_nuFFT(level=...)`` as the data-error level of the discrepancy principle.
+
+    Because the two terms differ by a sign from ring to ring, ``c_+`` is the
+    ring-to-ring ALTERNATING part of the measured Nyquist slot, and that is available
+    from the data before any solve. Cost is O(nside).
+
+    Parameters
+    ----------
+    mp : ndarray, shape (8*nside, 4*nside)
+        The DFS array, in the natural (fftshifted) longitude order that ``DFS``
+        produces, so that column 0 is the Nyquist slot ``m = -2*nside``.
+
+    Returns
+    -------
+    float
+        The estimated level, comparable to ``||b - A f_hat||_W``.
+
+    Notes
+    -----
+    The estimate covers only this one defect. It is close to the whole least-squares
+    residual when the field carries power at ``|m| = 2*nside``, and an underestimate
+    when it does not -- a field band-limited below the grid Nyquist has no such content,
+    and its residual floor is set by something else. Combine it with a fallback rule
+    rather than relying on it alone.
+    """
+    mp = np.asarray(mp)
+    n_trans = mp.shape[1]
+    nside = n_trans // 4
+    w = compute_voronoi_weights_1d(_upsampled_latitudes(nside))
+    v = mp[:, 0]
+    belt = np.arange(nside, 3 * nside)
+    # half the difference of neighbouring belt rings: the smooth c_- cancels to first
+    # order in the ring spacing, the sign-flipped c_+ adds.
+    d = 0.5 * (v[belt] - v[belt + 1])
+    # factor 2: the DFS doubling carries every ring twice.
+    return float(np.sqrt(2.0 * np.sum(w[belt] * (d.real**2 + d.imag**2))))
+
+
 def _fold_ops(fold, n_trans, M_samples):
     """(apply, adjoint) for the polar-ring longitude alias, or ``(None, None)``.
 

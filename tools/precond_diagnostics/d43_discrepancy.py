@@ -9,12 +9,14 @@ rule.
 
 Here delta is NOT statistical noise. The data are a map; what is wrong is the OPERATOR --
 the alias fold asserts that unresolved modes below ``alias_tol`` of a mode's peak vanish.
-That is a modelling error rather than data noise, so the classical results do not apply
-directly and an extension to perturbed operators is needed. NOTE: this docstring
-originally cited "Kaltenbacher et al. (2023)" for that extension while
-``latitude_solve_theory.md`` §9 [3] cites Neubauer, J. Inverse Ill-Posed Probl. 30
-(2022), 905-915. Both were written from memory and NEITHER has been checked against a
-publisher record. Do not repeat either until one is verified.
+That is a modelling error rather than data noise. Nemirovsky (1986) covers exactly that
+case: his equation (2) bounds ``||A - A_h|| <= h`` alongside the data error, and the
+stopping rule he analyses is ``||A_h x_n - b|| <= Theta * (h ||x_n|| + eps)``. Neubauer
+(2022) proves order-optimal rates for it. Both are in ``papers/``.
+
+(An earlier version of this docstring cited "Kaltenbacher et al. (2023)" for the
+perturbed-operator result. No such reference was found and it appears to have been
+invented; the correct citations are the two above.)
 
 So the principle predicts the stopping level should track ``alias_tol`` rather than being
 a fixed constant, which would explain CLAUDE.md's note that the two "interact".  This

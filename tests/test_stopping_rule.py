@@ -106,6 +106,145 @@ def test_stagnation_stop_is_inert_on_the_unfolded_scalar_solve():
     assert np.linalg.norm(ref - got) <= 1e-10 * np.linalg.norm(ref)
 
 
+def _dfs_of(Q, U, spin=2):
+    with contextlib.redirect_stdout(io.StringIO()):
+        up, fc = transform_healpix_to_grid(Q + 1j * U)
+        _, dfs = DFS(up, fc, spin=spin)
+    return dfs
+
+
+def _residual_floor(Q, U, lmax, nside, alias_tol=1e-2):
+    """The converged data residual, in absolute (un-normalised) units."""
+    from src.nuFFT import compute_voronoi_weights_1d, _upsampled_latitudes
+
+    dfs = _dfs_of(Q, U)
+    _, _, keep = dfs_fold_plan(nside, 2, alias_tol)
+    w = compute_voronoi_weights_1d(_upsampled_latitudes(nside))
+    bw = np.sqrt(
+        np.sum(np.where(np.asarray(keep), w[:, None] * np.abs(np.asarray(dfs)) ** 2, 0))
+    )
+    last = [None]
+    with contextlib.redirect_stdout(io.StringIO()):
+        forward_spin(
+            Q,
+            U,
+            lmax,
+            alias_tol=alias_tol,
+            rtol=1e-12,
+            maxiter=800,
+            eta=None,
+            monitor=lambda k, rho, rr, g: last.__setitem__(0, rho),
+        )
+    return last[0] * bw
+
+
+@pytest.mark.parametrize("nside", [16, 32])
+def test_nyquist_discrepancy_predicts_the_residual_floor(nside):
+    """The a-priori level must match the floor it is meant to estimate."""
+    from src.nuFFT import nyquist_discrepancy
+
+    aE, _, Q, U, lmax = _spin_sky(nside)
+    got = nyquist_discrepancy(_dfs_of(Q, U))
+    want = _residual_floor(Q, U, lmax, nside)
+    assert got == pytest.approx(want, rel=0.10), f"{got:.4e} against a floor {want:.4e}"
+
+
+def test_nyquist_discrepancy_is_blind_to_a_sky_without_grid_nyquist_power():
+    """The documented limitation: no |m| = 2*nside content, no estimate.
+
+    This is why the level cannot be the only stopping rule -- it silently never fires.
+    """
+    from src.nuFFT import nyquist_discrepancy
+
+    nside = 32
+    slmax = 2 * nside - 1  # one below the grid Nyquist
+    ell = np.arange(slmax + 1)
+    np.random.seed(0)
+    aE = hp.synalm((1.0 + ell) ** -3.0, lmax=slmax, new=True)
+    aB = hp.synalm((1.0 + ell) ** -3.0, lmax=slmax, new=True)
+    Q, U = hp.alm2map_spin([aE, aB], nside, 2, slmax)
+    got = nyquist_discrepancy(_dfs_of(Q, U))
+    floor = _residual_floor(Q, U, 2 * nside, nside)
+    assert got < 1e-12 * floor, "expected the estimate to collapse, not to track"
+    assert floor > 1e-6, "the true floor is not zero, so a fallback rule is required"
+
+
+def test_theta_falls_through_to_the_stagnation_rule_when_the_level_is_unreachable():
+    """Together they cover the case neither covers alone."""
+    nside, slmax = 32, 2 * 32 - 1
+    ell = np.arange(slmax + 1)
+    np.random.seed(0)
+    aE = hp.synalm((1.0 + ell) ** -3.0, lmax=slmax, new=True)
+    aB = hp.synalm((1.0 + ell) ** -3.0, lmax=slmax, new=True)
+    Q, U = hp.alm2map_spin([aE, aB], nside, 2, slmax)
+    _, its_level_only = _run(
+        Q, U, 2 * nside, theta=1.02, eta=None, rtol=1e-9, maxiter=900
+    )
+    _, its_both = _run(
+        Q, U, 2 * nside, theta=1.02, eta=ALIAS_ETA, rtol=1e-9, maxiter=900
+    )
+    assert its_both < its_level_only, (
+        "the stagnation rule must still stop the run when the a-priori level is "
+        f"unreachable ({its_both} against {its_level_only})"
+    )
+
+
+def _floor_at(nside, alias_tol, signal_lmax, seed=0, maxiter=6000):
+    ell = np.arange(signal_lmax + 1)
+    np.random.seed(seed)
+    aE = hp.synalm((1.0 + ell) ** -3.0, lmax=signal_lmax, new=True)
+    aB = hp.synalm((1.0 + ell) ** -3.0, lmax=signal_lmax, new=True)
+    Q, U = hp.alm2map_spin([aE, aB], nside, 2, signal_lmax)
+    return _residual_floor(Q, U, 2 * nside, nside, alias_tol=alias_tol)
+
+
+def test_the_second_error_term_is_the_alias_assertion_and_scales_with_alias_tol():
+    """With the Nyquist column gone, the floor tracks ``alias_tol``.
+
+    It does NOT track it while the column is present, which is why the proportionality
+    looked falsified: the Nyquist term does not depend on ``alias_tol`` at all and is
+    about 70x larger.
+    """
+    nside = 16
+    below = 2 * nside - 1  # no power at the grid Nyquist
+    at = 2 * nside
+    loose = _floor_at(nside, 1e-1, below)
+    tight = _floor_at(nside, 1e-3, below)
+    assert loose / tight > 100, (
+        f"expected the floor to fall with alias_tol, got {loose:.3e} -> {tight:.3e}"
+    )
+    # and the same comparison with the Nyquist column present shows no such dependence
+    loose_at = _floor_at(nside, 1e-1, at)
+    tight_at = _floor_at(nside, 1e-3, at)
+    assert 0.5 < tight_at / loose_at < 2.0, (
+        "with the Nyquist column present the floor must be insensitive to alias_tol, "
+        f"got {loose_at:.3e} -> {tight_at:.3e}"
+    )
+
+
+def test_the_pole_fill_is_not_the_second_error_term():
+    """Falsification test: the Lagrange pole order does not move the floor.
+
+    Recorded because the pole fill was the obvious suspect, and because a pole error the
+    model can absorb leaves no residual at all -- so a null result here does not mean the
+    pole fill is harmless, only that the discrepancy principle cannot see it.
+    """
+    import src.double_fourier_sphere as dfsmod
+
+    nside = 16
+    original = dfsmod.POLE_INTERP_NPTS
+    try:
+        dfsmod.POLE_INTERP_NPTS = 2
+        coarse = _floor_at(nside, 1e-4, 2 * nside - 1)
+        dfsmod.POLE_INTERP_NPTS = 10
+        fine = _floor_at(nside, 1e-4, 2 * nside - 1)
+    finally:
+        dfsmod.POLE_INTERP_NPTS = original
+    assert abs(fine - coarse) <= 0.2 * coarse, (
+        f"pole order changed the floor: {coarse:.3e} -> {fine:.3e}"
+    )
+
+
 def test_the_alias_fold_plan_is_what_makes_the_residual_stagnate():
     """The data residual must stall well above zero; that floor is the model error."""
     nside = 16

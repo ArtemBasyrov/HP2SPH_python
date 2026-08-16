@@ -71,7 +71,7 @@ from .FSHT import (
 )
 from .data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
 from .double_fourier_sphere import DFS, DFS_inverse, dfs_fold_plan
-from .nuFFT import apply_nuFFT, inverse_nuFFT
+from .nuFFT import apply_nuFFT, inverse_nuFFT, nyquist_discrepancy
 
 SPIN = 2  # the polarization spin; the native routes run the +SPIN pass only
 
@@ -113,6 +113,7 @@ def _spin_F_hp2sph(
     rtol=ALIAS_RTOL,
     maxiter=CG_MAXITER,
     level=None,
+    theta=None,
     eta=ALIAS_ETA,
     delay=5,
     monitor=None,
@@ -138,6 +139,15 @@ def _spin_F_hp2sph(
     preceding ``delay`` iterations. It is dimensionless and needs no per-resolution
     tuning. Raise it to stop sooner, lower it to converge further.
 
+    ``theta`` selects a different stop: Morozov's discrepancy principle with the level
+    computed in advance rather than read off the iteration. ``nyquist_discrepancy``
+    estimates the one modelling error that dominates here -- the longitude grid cannot
+    represent its own Nyquist mode -- and the run halts once the data residual reaches
+    ``theta`` times it. Values a little above 1 are the useful range. It stops in about
+    half the iterations ``eta`` needs, at a few percent more error, and it is only
+    meaningful when the field carries power at ``|m| = 2*nside``; below that the level
+    is unreachable and ``eta`` takes over. Leave it ``None`` to use ``eta`` alone.
+
     ``rtol`` is only a fallback for the case where the residual never stagnates, and
     ``maxiter`` a safety cap above that.
     """
@@ -146,6 +156,8 @@ def _spin_F_hp2sph(
     upsampled, fft_coeff = transform_healpix_to_grid(z)
     _, dfs = DFS(upsampled, fft_coeff, spin=spin)
     target, phase, keep = dfs_fold_plan(nside, spin, alias_tol)
+    if theta is not None:
+        level = theta * nyquist_discrepancy(dfs)
     fft_lat = apply_nuFFT(
         dfs,
         solver="cg",
