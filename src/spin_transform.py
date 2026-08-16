@@ -156,8 +156,11 @@ def _spin_F_hp2sph(
     z = Q + 1j * U if spin > 0 else Q - 1j * U
     nside = hp.npix2nside(np.asarray(z).shape[0])
     upsampled, fft_coeff = transform_healpix_to_grid(z)
-    _, dfs = DFS(upsampled, fft_coeff, spin=spin)
-    target, phase, keep = dfs_fold_plan(nside, spin, alias_tol)
+    # Only the mirror-fundamental rows are built: the latitude solve restricts to them
+    # anyway, and the mirrored half is the largest single item in the transform's peak
+    # memory.
+    _, dfs = DFS(upsampled, fft_coeff, spin=spin, half=True)
+    target, phase, keep = dfs_fold_plan(nside, spin, alias_tol, half=True)
     if theta is not None:
         level = theta * nyquist_discrepancy(dfs)
     fft_lat = apply_nuFFT(
@@ -169,6 +172,7 @@ def _spin_F_hp2sph(
         maxiter=maxiter,
         eps=eps,
         spin=spin,
+        half_domain=True,
         level=level,
         eta=eta,
         delay=delay,

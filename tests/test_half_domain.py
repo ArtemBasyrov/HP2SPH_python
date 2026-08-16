@@ -201,3 +201,63 @@ def test_asymmetric_input_falls_back_to_the_full_domain(nside, healpix_map):
     got = apply_nuFFT(dfs, solver="cg", rtol=1e-10, spin=0)
     ref = apply_nuFFT(dfs, solver="cg", rtol=1e-10)
     assert np.linalg.norm(got - ref) <= 1e-10 * np.linalg.norm(ref)
+
+
+# --- the half-domain DFS ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spin", [0, 2])
+def test_half_dfs_matches_the_first_half_of_the_full_one(nside, spin):
+    """``half=True`` must reproduce the full layout's leading rows exactly.
+
+    The mirrored rings are an exact reflection of the originals, and the latitude solve
+    restricts to the fundamental rows anyway, so building them is pure cost. The pole
+    stencils still need the mirror, but only of the few rings nearest each pole, which
+    ``_pole_stencils`` forms directly.
+    """
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    mp = rng.standard_normal(npix) + (1j * rng.standard_normal(npix) if spin else 0)
+    upsampled, fft_coeff = transform_healpix_to_grid(mp)
+    full_map, full_fft = DFS(upsampled, fft_coeff, spin=spin)
+    half_map, half_fft = DFS(upsampled, fft_coeff, spin=spin, half=True)
+    n = 4 * nside + 1
+    assert half_fft.shape == (n, 4 * nside)
+    assert np.array_equal(full_fft[:n], half_fft)
+    assert np.array_equal(full_map[:n], half_map)
+
+
+@pytest.mark.parametrize("spin", [0, 2])
+def test_half_fold_plan_matches_the_first_half_of_the_full_one(nside, spin):
+    n = 4 * nside + 1
+    full = dfs_fold_plan(nside, spin, 1e-2)
+    half = dfs_fold_plan(nside, spin, 1e-2, half=True)
+    for f, h in zip(full, half):
+        assert np.array_equal(f[:n], h)
+
+
+def test_half_domain_input_gives_the_identical_solve(nside):
+    """Feeding the half arrays must change nothing about the answer."""
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    z = rng.standard_normal(npix) + 1j * rng.standard_normal(npix)
+    upsampled, fft_coeff = transform_healpix_to_grid(z)
+    _, full = DFS(upsampled, fft_coeff, spin=2)
+    _, half = DFS(upsampled, fft_coeff, spin=2, half=True)
+    ft, fp, fk = dfs_fold_plan(nside, 2, 1e-2)
+    ht, hp_, hk = dfs_fold_plan(nside, 2, 1e-2, half=True)
+    kw = dict(solver="cg", rtol=1e-12, maxiter=600, eta=None, spin=2)
+    a = apply_nuFFT(full, sample_mask=fk, fold=(ft, fp), **kw)
+    b = apply_nuFFT(half, sample_mask=hk, fold=(ht, hp_), half_domain=True, **kw)
+    assert np.array_equal(a, b)
+
+
+def test_half_domain_rejects_a_full_height_array(nside):
+    """The row count is the only thing distinguishing the two layouts, so check it."""
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    z = rng.standard_normal(npix) + 1j * rng.standard_normal(npix)
+    upsampled, fft_coeff = transform_healpix_to_grid(z)
+    _, full = DFS(upsampled, fft_coeff, spin=2)
+    with pytest.raises(ValueError, match="half_domain expects"):
+        apply_nuFFT(full, solver="cg", spin=2, half_domain=True)

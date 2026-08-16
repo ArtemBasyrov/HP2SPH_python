@@ -730,6 +730,7 @@ def cg_nufft_forward(
     delay=5,
     monitor=None,
     workers=1,
+    half_domain=False,
 ):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
@@ -743,8 +744,12 @@ def cg_nufft_forward(
     # DATA is checked rather than assumed, so an array that does not have it falls back
     # to the full domain below.
     plan_half = _mirror_plan(x, spin, n_trans, N_modes)
-    if plan_half is not None and _is_mirror_symmetric(
-        f_samples, plan_half[0], plan_half[3]
+    # ``half_domain`` says the caller already dropped the mirrored rows, so the symmetry
+    # holds by construction and there is nothing left to check. The rows the plan keeps
+    # are exactly ``0 .. 4*nside``, so every ``[..., rows]`` below is then the identity
+    # and the half arrays flow through untouched.
+    if plan_half is not None and (
+        half_domain or _is_mirror_symmetric(f_samples, plan_half[0], plan_half[3])
     ):
         return _cg_nufft_forward_half(
             x,
@@ -967,6 +972,7 @@ def apply_nuFFT(
     delay=5,
     monitor=None,
     workers=None,
+    half_domain=False,
 ) -> np.ndarray:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
@@ -1035,6 +1041,11 @@ def apply_nuFFT(
     """
     _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
     nside = mp.shape[1] // 4
+    if half_domain and mp.shape[0] != 4 * nside + 1:
+        raise ValueError(
+            f"half_domain expects {4 * nside + 1} latitude rows "
+            f"(pole, rings, pole), got {mp.shape[0]}"
+        )
     if rtol is None:
         rtol = 1e-9
     if solve_modes is None:
@@ -1087,6 +1098,7 @@ def apply_nuFFT(
             delay=delay,
             monitor=monitor,
             workers=default_workers(4 * nside) if workers is None else workers,
+            half_domain=half_domain,
         )
         if info != 0:
             logger.warning("CG did not converge (info=%s)", info)

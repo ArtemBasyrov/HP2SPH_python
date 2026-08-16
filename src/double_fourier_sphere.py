@@ -51,9 +51,68 @@ def _mirror_map(mp: np.ndarray, spin: int) -> np.ndarray:
     return mirrored * ((-1.0) ** spin)
 
 
+def _pole_stencils(orig: np.ndarray, spin: int):
+    """The two pole rows, computed from the edge rings alone.
+
+    ``interpolate_polar_rings`` reads its stencils out of the fully doubled map, but
+    they only ever involve the ``npts`` rings nearest each pole and the mirror images of
+    those same rings. The mirror is a glide reflection -- a row flip plus a half-turn in
+    longitude -- so those few rows can be formed directly and the southern half of the
+    map never has to exist.
+
+    ``orig`` is the ``(4*nside-1, 4*nside)`` grid of original rings. Returns the north
+    and south pole rows, identical to what ``interpolate_polar_rings`` produces.
+    """
+    n_rings, n_lon = orig.shape
+    nside = n_lon // 4
+    npts = max(2, min(POLE_INTERP_NPTS, nside - 1))
+    latitudes = create_latitude_array(nside)
+    sgn = (-1.0) ** spin
+    half_turn = n_lon // 2
+
+    north_theta = np.concatenate((np.flip(latitudes[:npts]), 180 - latitudes[:npts]))
+    north_fp = np.concatenate(
+        (np.flip(orig[:npts], axis=0), np.roll(orig[:npts], half_turn, axis=1) * sgn)
+    )
+    north = _pole_lagrange_weights(north_theta, 90.0) @ north_fp
+
+    south_theta = np.concatenate((latitudes[-npts:], -180 - np.flip(latitudes[-npts:])))
+    south_fp = np.concatenate(
+        (
+            orig[n_rings - npts :],
+            np.roll(np.flip(orig[n_rings - npts :], axis=0), half_turn, axis=1) * sgn,
+        )
+    )
+    south = _pole_lagrange_weights(-south_theta, 90.0) @ south_fp
+    return north, south
+
+
 def DFS(
-    mp: np.ndarray, fft_coeff: np.ndarray, spin: int = 0
+    mp: np.ndarray, fft_coeff: np.ndarray, spin: int = 0, half: bool = False
 ) -> (np.ndarray, np.ndarray):
+    """Double the map across the poles and return ``(map, fourier)`` rows.
+
+    The full layout is ``[north pole, rings, south pole, mirrored rings]``.
+
+    ``half=True`` returns only ``[north pole, rings, south pole]``. The mirrored rings
+    are an exact reflection -- ``d[mu(r), c] = (-1)^(m+spin) d[r, c]`` -- and the
+    latitude solve exploits that symmetry to work on this half anyway, so materialising
+    them costs memory and buys nothing. Pass the result to ``apply_nuFFT`` together with
+    ``half_domain=True`` and with fold arrays from ``dfs_fold_plan(..., half=True)``.
+    """
+    if half:
+        n_rings, n_lon = fft_coeff.shape
+        north, south = _pole_stencils(mp, spin)
+        half_map = np.empty((n_rings + 2, n_lon), dtype=mp.dtype)
+        half_map[0] = north
+        half_map[1 : n_rings + 1] = mp
+        half_map[n_rings + 1] = south
+        half_fft = np.empty((n_rings + 2, n_lon), dtype=complex)
+        half_fft[0] = np.fft.fft(north, n=n_lon, norm="forward")
+        half_fft[1 : n_rings + 1] = fft_coeff
+        half_fft[n_rings + 1] = np.fft.fft(south, n=n_lon, norm="forward")
+        return half_map, np.fft.fftshift(half_fft, axes=1)
+
     south_part = _mirror_map(mp, spin)
     double_map = np.concatenate((mp, south_part), axis=0)
 
@@ -110,7 +169,7 @@ def DFS_inverse(double_fft: np.ndarray, spin: int = 0) -> np.ndarray:
 
 
 def dfs_fold_plan(
-    nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None
+    nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None, half: bool = False
 ) -> (np.ndarray, np.ndarray, np.ndarray):
     """``data_interpolation.ring_fold_plan`` in the row layout ``DFS`` returns.
 
@@ -140,12 +199,17 @@ def dfs_fold_plan(
         pole_keep[i, np.unique(np.nonzero(relaxed)[1])] = False
         pole_keep[i, np.unique(target[rings][relaxed])] = False
 
+    head = (
+        np.concatenate((ident, target, ident)),
+        np.concatenate((np.ones((1, n_lon)), phase, np.ones((1, n_lon)))),
+        np.concatenate((pole_keep[:1], keep, pole_keep[1:])),
+    )
+    if half:
+        return head
     return (
-        np.concatenate((ident, target, ident, np.flip(target, axis=0))),
-        np.concatenate(
-            (np.ones((1, n_lon)), phase, np.ones((1, n_lon)), np.flip(phase, axis=0))
-        ),
-        np.concatenate((pole_keep[:1], keep, pole_keep[1:], np.flip(keep, axis=0))),
+        np.concatenate((head[0], np.flip(target, axis=0))),
+        np.concatenate((head[1], np.flip(phase, axis=0))),
+        np.concatenate((head[2], np.flip(keep, axis=0))),
     )
 
 
