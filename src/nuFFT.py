@@ -37,6 +37,8 @@ Synthesis (``cg_nufft_backward`` / ``inverse_nuFFT``) is a plain NUFFT evaluatio
 """
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import finufft
@@ -166,6 +168,100 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
     s_inv = np.where(s > rcond * s[0], 1.0 / s, 0.0)
     f_hat = (Vh.conj().T * s_inv) @ (U.conj().T @ weighted)  # (N_modes, n_trans)
     return f_hat, 0
+
+
+_EXECUTORS = {}
+
+
+def _executor(workers):
+    """A process-lifetime thread pool of the given size, created on first use."""
+    ex = _EXECUTORS.get(workers)
+    if ex is None:
+        ex = ThreadPoolExecutor(max_workers=workers)
+        _EXECUTORS[workers] = ex
+    return ex
+
+
+# Below this many transforms the thread hand-off costs more than the split saves.
+# Measured crossover, spin forward, alternating A/B: 0.31x at 32 transforms, 0.72x at
+# 64, 1.24x at 128, 1.63x at 256.
+WORKER_MIN_TRANSFORMS = 128  # nside 32
+
+
+def default_workers(n_trans: int = None) -> int:
+    """How many threads the latitude solve splits its transform batch over.
+
+    Set ``HP2SPH_NUFFT_WORKERS`` to override; 1 disables the split. Otherwise it is the
+    core count capped at 7, above which the measured gain flattens.
+
+    ``n_trans`` is the batch size. Small batches return 1: the per-call thread hand-off
+    is fixed while the work per thread shrinks, so below ``WORKER_MIN_TRANSFORMS`` the
+    split is a slowdown rather than a speed-up.
+    """
+    env = os.environ.get("HP2SPH_NUFFT_WORKERS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    if n_trans is not None and n_trans < WORKER_MIN_TRANSFORMS:
+        return 1
+    return max(1, min(7, os.cpu_count() or 1))
+
+
+class _BatchPlan:
+    """A ``finufft.Plan`` whose transform batch is split across threads.
+
+    The latitude solve runs ``4*nside`` independent 1-D transforms, each only a few
+    thousand points. finufft parallelises WITHIN one transform, not across a batch, so
+    on this shape its own threading is at best marginal and at small thread counts it is
+    much worse than serial. Splitting the batch across threads and giving each chunk a
+    single-threaded plan scales nearly linearly instead, because the finufft call
+    releases the GIL.
+
+    Interchangeable with ``finufft.Plan`` for the ``setpts`` and ``execute`` calls used
+    here. ``workers=1`` builds one plan and adds no threading.
+
+    The chunks are contiguous row blocks of a C-ordered ``(n_trans, ...)`` array, so
+    every chunk is a view and no data is copied. Each thread owns its own plan, since
+    a plan may not be executed concurrently with itself.
+    """
+
+    def __init__(self, kind, n_modes, n_trans, isign, eps, workers):
+        workers = max(1, min(int(workers), n_trans))
+        self.bounds = np.linspace(0, n_trans, workers + 1).astype(int)
+        self.plans = [
+            finufft.Plan(
+                kind,
+                (n_modes,),
+                n_trans=int(hi - lo),
+                isign=isign,
+                dtype=np.complex128,
+                eps=eps,
+                nthreads=1,
+            )
+            for lo, hi in zip(self.bounds[:-1], self.bounds[1:])
+        ]
+        self.workers = workers
+
+    def setpts(self, x):
+        for p in self.plans:
+            p.setpts(x)
+
+    def execute(self, data, out):
+        if self.workers == 1:
+            return self.plans[0].execute(data, out)
+        lo, hi = self.bounds[:-1], self.bounds[1:]
+        ex = _executor(self.workers)
+        list(
+            ex.map(
+                lambda i: self.plans[i].execute(
+                    data[lo[i] : hi[i]], out[lo[i] : hi[i]]
+                ),
+                range(self.workers),
+            )
+        )
+        return out
 
 
 def nyquist_discrepancy(mp: np.ndarray) -> float:
@@ -357,6 +453,7 @@ def _cg_nufft_forward_half(
     eta=None,
     delay=5,
     monitor=None,
+    workers=1,
 ):
     """``cg_nufft_forward`` restricted to the mirror-symmetric subspace."""
     mu, rows, mult, parity, scale, even = plan_half
@@ -364,12 +461,8 @@ def _cg_nufft_forward_half(
     Mh = len(rows)
     K = (N_modes - 1) // 2
 
-    plan_forward = finufft.Plan(
-        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128, eps=eps
-    )
-    plan_adjoint = finufft.Plan(
-        1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128, eps=eps
-    )
+    plan_forward = _BatchPlan(2, N_modes, n_trans, 1, eps, workers)
+    plan_adjoint = _BatchPlan(1, N_modes, n_trans, -1, eps, workers)
     xh = np.ascontiguousarray(x[rows])
     plan_forward.setpts(xh)
     plan_adjoint.setpts(xh)
@@ -571,6 +664,7 @@ def cg_nufft_forward(
     eta=None,
     delay=5,
     monitor=None,
+    workers=1,
 ):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
@@ -601,15 +695,12 @@ def cg_nufft_forward(
             eta=eta,
             delay=delay,
             monitor=monitor,
+            workers=workers,
         )
 
     # Precompute NUFFT plans with batch processing (n_trans transforms)
-    plan_forward = finufft.Plan(
-        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128, eps=eps
-    )
-    plan_adjoint = finufft.Plan(
-        1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128, eps=eps
-    )
+    plan_forward = _BatchPlan(2, N_modes, n_trans, 1, eps, workers)
+    plan_adjoint = _BatchPlan(1, N_modes, n_trans, -1, eps, workers)
 
     # Set nonuniform points (same for all transforms)
     plan_forward.setpts(x)
@@ -810,6 +901,7 @@ def apply_nuFFT(
     eta=None,
     delay=5,
     monitor=None,
+    workers=None,
 ) -> np.ndarray:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
@@ -929,6 +1021,7 @@ def apply_nuFFT(
             eta=eta,
             delay=delay,
             monitor=monitor,
+            workers=default_workers(4 * nside) if workers is None else workers,
         )
         if info != 0:
             logger.warning("CG did not converge (info=%s)", info)
