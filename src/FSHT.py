@@ -8,6 +8,30 @@ from .ft_sphere import fourier2sph as _ft_fourier2sph
 from .ft_sphere import sph2fourier as _ft_sph2fourier
 
 
+def _fill_columns(out, X, L, cosine, c_m):
+    """Write one parity class of longitude columns from their latitude modes.
+
+    ``X`` holds the source columns, rows ordered as the centred latitude modes
+    ``k = -L .. L``. A column whose ``(m + spin)`` is even is a cosine series in
+    latitude and one whose ``(m + spin)`` is odd is a sine series, which is the whole
+    of the difference between the two branches here.
+    """
+    if X.shape[1] == 0:
+        return
+    if cosine:
+        # Row 0 is the Chebyshev T_0 / latitude-DC term. For an even cosine series
+        # f = sum_k c_k e^{ikθ} (c_{-k} = c_k) the Chebyshev coefficients are g_0 = c_0
+        # and g_k = 2 c_k for k > 0 -- i.e. the DC row carries NO factor 2. A factor 2
+        # here over-weighted the latitude DC, leaking even-l zonal power into the
+        # monopole and inflating even-m gains.
+        out[0] = X[L] * c_m
+        out[1:] = (X[L + 1 :] + X[L - 1 :: -1]) * c_m
+    else:
+        out[0] = 1j * (X[L + 1] - X[L - 1]) * c_m
+        # all odd m at l = lmax are zero, so the last row is left at 0
+        out[1:L] = 1j * (X[L + 2 :] - X[L - 2 :: -1]) * c_m
+
+
 def preparation(bivar_coeffs: np.ndarray, spin: int = 0) -> np.ndarray:
     # bivar_coeffs: (2*L+1 latitude modes [centered], 4*NSIDE longitude [natural
     # centered order m = -2*NSIDE .. 2*NSIDE-1]). The internal latitude band
@@ -17,69 +41,68 @@ def preparation(bivar_coeffs: np.ndarray, spin: int = 0) -> np.ndarray:
     # the 2*L+1 columns the Fourier->spherical-harmonic step expects.
     NSIDE = bivar_coeffs.shape[1] // 4
     L = (bivar_coeffs.shape[0] - 1) // 2  # internal latitude band limit
-
-    # expand longitude to 4*NSIDE+1 (split the m = -2*NSIDE column across +-)
-    X_small = np.zeros((2 * L + 1, 4 * NSIDE + 1), dtype=complex)
-    neg_column = bivar_coeffs[:, 0]  # m = -2*NSIDE (index 0 in natural ordering)
-    X_small[:, : 4 * NSIDE] = bivar_coeffs
-    X_small[:, 0] = 0.5 * neg_column
-    X_small[:, -1] = 0.5 * neg_column
-
-    # embed the populated m = -2*NSIDE .. 2*NSIDE block centered inside the full
-    # m = -L .. L grid (everything with |m| > 2*NSIDE stays zero)
-    X_coeff = np.zeros((2 * L + 1, 2 * L + 1), dtype=complex)
-    X_coeff[:, L - 2 * NSIDE : L + 2 * NSIDE + 1] = X_small
+    J = 2 * NSIDE  # largest |m| the longitude grid carries
+    if L < J:
+        raise ValueError(
+            f"the latitude band L={L} cannot hold longitude modes up to |m|={J}"
+        )
 
     # transform X into g array, size (L+1, 2*L+1)
     g = np.zeros((L + 1, 2 * L + 1), dtype=complex)
 
-    # rearange X into [0 ,-1, 1, -2, 2, ...] order along k. These are integer mode
-    # numbers, but fftfreq*(2L+1) returns floats with rounding error that grows with
-    # L; rint to exact ints so the `% 2` parity test below cannot misclassify a mode.
-    # (Without this, ~20-80 modes flip even<->odd at L=512/2048 -> nside 128/512 lost
-    # ~20% of the transform, while nside 64/256 happened to round cleanly.)
-    indx = np.rint(np.fft.fftfreq(2 * L + 1, d=1) * (2 * L + 1)).astype(int)
-    indx = np.fft.fftshift(indx)
-    sel = np.argsort(np.abs(indx), kind="stable")
-    indx = indx[sel]
-    X_sort = X_coeff[:, sel]
+    c_m = np.sqrt(1.0 / np.pi)
+    c_0 = np.sqrt(0.5 / np.pi)
 
-    X_pos_ell = X_sort[L:]  # including 0 and positive ell = [0, 1, 2, ..., L]
-    X_neg_ell = X_sort[:L]  # negative ell = [-L, ..., -2, -1]
-    X_neg_ell = np.flip(X_neg_ell, axis=0)  # [-1, -2, ..., -L]
+    # The FSHT wants the longitude modes in the order [0, -1, 1, -2, 2, ...], so output
+    # column 2j-1 carries m = -j and column 2j carries m = +j, while the input holds
+    # them in natural centred order (column m + 2*NSIDE). That permutation used to be
+    # built explicitly -- widen to 4*NSIDE+1 columns, embed centred in 2*L+1, then
+    # argsort -- as three full (2*L+1, 2*L+1) complex arrays, 1.1 GB apiece at nside
+    # 2048, of which the first two are copies into an array of the same shape whenever
+    # L = 2*NSIDE, the shipped compact band. It needs none of them: reading m = -j and
+    # writing 2j-1 is a reversed slice against a strided one, and columns beyond
+    # |m| = 2*NSIDE are zero and simply left alone.
+    #
+    # A column's branch depends on the parity of (m + spin) and m = -j and m = +j have
+    # the same parity, so both of a j's columns are filled together and the j of one
+    # parity are a stride-2 slice of the input and a stride-4 slice of the output.
+    g[0, 0] = bivar_coeffs[L, J] * c_0
+    g[1:, 0] = (bivar_coeffs[L + 1 :, J] + bivar_coeffs[L - 1 :: -1, J]) * c_0
 
-    # create sel for odd and even longitude modes. The bivariate Fourier basis is
-    # cos(l*theta) when (m + spin) is even and sin((l+1)*theta) when (m + spin) is
-    # odd (FastTransforms spinsph2fourier convention; the scalar spin=0 case is the
-    # plain "m even -> cosine, m odd -> sine"). For spin = +-2 this parity is the
-    # same columns as scalar, but writing it as (m + spin) keeps it correct for any
-    # spin and documents the dependence.
-    sel_even = (indx[1:] + spin) % 2 == 0
-    sel_odd = ~sel_even
+    for j0 in (1, 2):
+        cosine = (j0 + spin) % 2 == 0
+        n = (J - 1 - j0) // 2 + 1  # how many j of this parity below the Nyquist one
+        if n <= 0:
+            continue
+        # m = -j: input column 2*NSIDE - j, output column 2j-1
+        _fill_columns(
+            g[:, 2 * j0 - 1 :: 4][:, :n],
+            bivar_coeffs[:, J - j0 :: -2][:, :n],
+            L,
+            cosine,
+            c_m,
+        )
+        # m = +j: input column 2*NSIDE + j, output column 2j
+        _fill_columns(
+            g[:, 2 * j0 :: 4][:, :n],
+            bivar_coeffs[:, J + j0 :: 2][:, :n],
+            L,
+            cosine,
+            c_m,
+        )
 
-    # first row j = 0 (the Chebyshev T_0 / latitude-DC term). For an even
-    # cosine series f = sum_k c_k e^{ikθ} (c_{-k}=c_k) the Chebyshev coeffs are
-    # g_0 = c_0 and g_k = 2 c_k for k>0 -- i.e. the DC row carries NO factor 2.
-    # The previous factor 2 here over-weighted the latitude DC, leaking even-l
-    # zonal power into the monopole and inflating even-m gains. (The odd-m cells
-    # below are a sine series and are handled separately.)
-    g[0, 1:] = X_pos_ell[0, 1:] * np.sqrt(1.0 / np.pi)
-    g[0, 1:][sel_odd] = (
-        1j * (X_pos_ell[1, 1:] - X_neg_ell[0, 1:])[sel_odd] * np.sqrt(1.0 / np.pi)
+    # |m| = 2*NSIDE is the longitude grid's Nyquist: +m and -m are the same sampled
+    # mode, so the single stored column is split half onto each end. This is where the
+    # documented l = m = 2*nside half gain comes from. Halve first and then sum, which
+    # is the order the columns were formed in before.
+    half = 0.5 * bivar_coeffs[:, 0]
+    _fill_columns(
+        g[:, 2 * J - 1 : 2 * J + 1],
+        np.stack((half, half), axis=1),
+        L,
+        (J + spin) % 2 == 0,
+        c_m,
     )
-
-    # first column k = m = 0 ; T_0 row again -> no factor 2 (see above)
-    g[0, 0] = X_pos_ell[0, 0] * np.sqrt(0.5 / np.pi)
-    g[1:, 0] = (X_pos_ell[1:, 0] + X_neg_ell[:, 0]) * np.sqrt(0.5 / np.pi)
-
-    # everyhting inside the matrix except the zero row and column
-    g_k_even = (X_pos_ell[1:, 1:] + X_neg_ell[:, 1:]) * np.sqrt(1.0 / np.pi)  # k even
-    g_k_odd = (
-        1j * (X_pos_ell[1 + 1 :, 1:] - X_neg_ell[1:, 1:]) * np.sqrt(1.0 / np.pi)
-    )  # k odd
-
-    g[1:, 1:][:, sel_even] = g_k_even[:, sel_even]
-    g[1:L, 1:][:, sel_odd] = g_k_odd[:, sel_odd]  # all odd m at l = lmax are zero
 
     return g
 
