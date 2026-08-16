@@ -6,6 +6,10 @@ from scipy.special import gammaln
 
 logger = logging.getLogger(__name__)
 
+# Rows per block when applying the per-ring phase reference. Chosen so the temporary
+# stays a few MB at any nside rather than scaling with the map.
+_PHASE_BLOCK = 64
+
 
 def get_ring_indices(nside: int) -> np.ndarray:
     """
@@ -252,7 +256,13 @@ def transform_healpix_to_grid(healpix_map: np.ndarray) -> (np.ndarray, np.ndarra
     # the SIGNED frequency (numpy FFT order), so use fftfreq, not arange.
     m_signed = np.fft.fftfreq(4 * nside) * (4 * nside)
     phi0 = ring_first_longitude(nside)
-    fft_coeff *= np.exp(-1j * np.outer(phi0, m_signed))
+    # Blocked, because the full phase array is the same size as ``fft_coeff`` itself and
+    # ``np.outer`` builds a second one of the same size before ``np.exp`` does. At nside
+    # 1024 that pair is 0.4 GB of transient for a multiply that is done row by row
+    # anyway; at nside 2048 it is 1.6 GB.
+    for lo in range(0, n_rings, _PHASE_BLOCK):
+        hi = min(lo + _PHASE_BLOCK, n_rings)
+        fft_coeff[lo:hi] *= np.exp(-1j * np.outer(phi0[lo:hi], m_signed))
 
     # Inverse FFT
     upsampled_data = np.fft.ifft(fft_coeff, n=4 * nside, axis=-1, norm="forward")

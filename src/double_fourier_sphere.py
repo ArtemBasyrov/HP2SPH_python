@@ -94,7 +94,8 @@ def DFS(
 
     The full layout is ``[north pole, rings, south pole, mirrored rings]``.
 
-    ``half=True`` returns only ``[north pole, rings, south pole]``. The mirrored rings
+    ``half=True`` returns only ``[north pole, rings, south pole]``, and returns ``None``
+    in place of the map, which no caller uses. The mirrored rings
     are an exact reflection -- ``d[mu(r), c] = (-1)^(m+spin) d[r, c]`` -- and the
     latitude solve exploits that symmetry to work on this half anyway, so materialising
     them costs memory and buys nothing. Pass the result to ``apply_nuFFT`` together with
@@ -103,10 +104,10 @@ def DFS(
     if half:
         n_rings, n_lon = fft_coeff.shape
         north, south = _pole_stencils(mp, spin)
-        half_map = np.empty((n_rings + 2, n_lon), dtype=mp.dtype)
-        half_map[0] = north
-        half_map[1 : n_rings + 1] = mp
-        half_map[n_rings + 1] = south
+        # The map half of the return value is not built. Every caller of ``DFS`` uses
+        # only the Fourier array, and at nside 1024 the map is another 0.27 GB whose
+        # only content beyond the two pole rows is a verbatim copy of ``mp``.
+        half_map = None
         half_fft = np.empty((n_rings + 2, n_lon), dtype=complex)
         half_fft[0] = np.fft.fft(north, n=n_lon, norm="forward")
         half_fft[1 : n_rings + 1] = fft_coeff

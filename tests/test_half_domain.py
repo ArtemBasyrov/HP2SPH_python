@@ -224,7 +224,8 @@ def test_half_dfs_matches_the_first_half_of_the_full_one(nside, spin):
     n = 4 * nside + 1
     assert half_fft.shape == (n, 4 * nside)
     assert np.array_equal(full_fft[:n], half_fft)
-    assert np.array_equal(full_map[:n], half_map)
+    assert half_map is None, "the map half is not built; no caller uses it"
+    assert full_map.shape[0] == 8 * nside
 
 
 @pytest.mark.parametrize("spin", [0, 2])
