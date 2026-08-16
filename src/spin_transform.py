@@ -74,6 +74,7 @@ from .double_fourier_sphere import (
     DFS,
     DFS_inverse,
     dfs_fold_plan,
+    dfs_fold_sparse,
     pole_stencil_rows,
 )
 from .nuFFT import apply_nuFFT, inverse_nuFFT, nyquist_discrepancy
@@ -170,14 +171,16 @@ def _spin_F_hp2sph(
     # anyway, and the mirrored half is the largest single item in the transform's peak
     # memory.
     _, dfs = DFS(upsampled, fft_coeff, spin=spin, half=True)
-    target, phase, keep = dfs_fold_plan(nside, spin, alias_tol, half=True)
+    # The fold plan is built as flat index arrays rather than as three full-grid
+    # arrays; only a few percent of entries say anything, and the dense form is 0.4 GB
+    # at nside 1024. It carries its own dropped entries, so no separate sample mask.
+    plan = dfs_fold_sparse(nside, spin, alias_tol)
     if theta is not None:
         level = theta * nyquist_discrepancy(dfs)
     fft_lat = apply_nuFFT(
         dfs,
         solver="cg",
-        sample_mask=keep,
-        fold=(target, phase),
+        fold=plan,
         rtol=rtol,
         maxiter=maxiter,
         eps=eps,

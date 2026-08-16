@@ -311,3 +311,74 @@ def test_pole_stencils_rejects_too_few_rows(nside):
     too_short = np.zeros((2 * k - 1, 4 * nside))
     with pytest.raises(ValueError, match="rings from each end"):
         _pole_stencils(too_short, 0)
+
+
+# --- the sparse fold plan -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("spin", [0, 2])
+def test_sparse_plan_matches_the_indices_derived_from_the_dense_one(nside, spin):
+    """``dfs_fold_sparse`` must reproduce, exactly, what ``_fold_ops`` would derive.
+
+    Also pins the structural fact it relies on: on the ring rows the moved set and the
+    dropped set are the SAME set. A relaxed entry is one the ring never measured, so its
+    equation is dropped while its content is still folded on; the only extra drops are
+    the pole slots a relaxed mode can have corrupted.
+    """
+    from src.double_fourier_sphere import dfs_fold_sparse
+
+    target, phase, keep = dfs_fold_plan(nside, spin, 1e-2, half=True)
+    n_rows, n_trans = target.shape
+    moved = target != np.arange(n_trans)[None, :]
+    r, c = np.nonzero(moved)
+    order = np.argsort(c * n_rows + r)
+
+    plan = dfs_fold_sparse(nside, spin, 1e-2)
+    assert (plan.n_trans, plan.n_rows) == (n_trans, n_rows)
+    o = np.argsort(plan.src)
+    assert np.array_equal(np.sort(plan.src), np.sort(c * n_rows + r))
+    assert np.array_equal(plan.dst[o], (target[r, c] * n_rows + r)[order])
+    assert np.array_equal(plan.phase[o], phase[r, c][order])
+    assert np.array_equal(plan.drop, np.sort(np.flatnonzero(~keep.T.reshape(-1))))
+
+    n_rings = 4 * nside - 1
+    ring_rows = slice(1, n_rings + 1)
+    assert np.array_equal(moved[ring_rows], ~keep[ring_rows]), (
+        "on ring rows the moved and dropped sets must coincide"
+    )
+    assert set(plan.src.tolist()) <= set(plan.drop.tolist())
+
+
+def test_sparse_plan_gives_the_identical_solve(nside):
+    from src.double_fourier_sphere import dfs_fold_sparse
+
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    z = rng.standard_normal(npix) + 1j * rng.standard_normal(npix)
+    upsampled, fft_coeff = transform_healpix_to_grid(z)
+    _, dfs = DFS(upsampled, fft_coeff, spin=2, half=True)
+    t, p, k = dfs_fold_plan(nside, 2, 1e-2, half=True)
+    kw = dict(solver="cg", rtol=1e-12, maxiter=600, eta=None, spin=2, half_domain=True)
+    dense = apply_nuFFT(dfs, sample_mask=k, fold=(t, p), **kw)
+    sparse = apply_nuFFT(dfs, fold=dfs_fold_sparse(nside, 2, 1e-2), **kw)
+    assert np.array_equal(dense, sparse)
+
+
+def test_sparse_plan_rejects_a_redundant_sample_mask(nside):
+    from src.double_fourier_sphere import dfs_fold_sparse
+
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    z = rng.standard_normal(npix) + 1j * rng.standard_normal(npix)
+    upsampled, fft_coeff = transform_healpix_to_grid(z)
+    _, dfs = DFS(upsampled, fft_coeff, spin=2, half=True)
+    _, _, keep = dfs_fold_plan(nside, 2, 1e-2, half=True)
+    with pytest.raises(ValueError, match="carries its own dropped entries"):
+        apply_nuFFT(
+            dfs,
+            solver="cg",
+            spin=2,
+            half_domain=True,
+            sample_mask=keep,
+            fold=dfs_fold_sparse(nside, 2, 1e-2),
+        )

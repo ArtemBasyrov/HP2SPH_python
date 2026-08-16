@@ -1,7 +1,15 @@
+from typing import NamedTuple
+
 import numpy as np
 import healpy as hp
 
-from .data_interpolation import create_latitude_array, ring_fold_plan
+from .data_interpolation import (
+    create_latitude_array,
+    mode_pole_envelope,
+    ring_first_longitude,
+    ring_fold_plan,
+    ring_pixel_counts,
+)
 
 # Number of HEALPix rings on EACH side of a pole used to extrapolate the (unsampled)
 # pole-ring value. Capped at the polar-cap size (nside-1) so the stencil never
@@ -228,6 +236,93 @@ def dfs_fold_plan(
         np.concatenate((head[1], np.flip(phase, axis=0))),
         np.concatenate((head[2], np.flip(keep, axis=0))),
     )
+
+
+class FoldPlan(NamedTuple):
+    """The polar-ring alias fold as flat index arrays, in the half-DFS layout.
+
+    ``src``, ``dst`` and ``drop`` index a C-contiguous ``(n_trans, n_rows)`` solver
+    buffer, i.e. entry ``(column c, row r)`` sits at ``c * n_rows + r``.
+
+    * ``src``  -- entries whose content moves onto another slot,
+    * ``dst``  -- where each of them lands,
+    * ``phase``-- the ``exp(i (m - b) phi0)`` it arrives with,
+    * ``drop`` -- entries carrying no data, which get zero quadrature weight.
+
+    ``drop`` is a superset of ``src``: a relaxed entry is exactly one the ring never
+    measured, so its equation is dropped while its content is still folded on. The only
+    additions are the pole slots a relaxed mode can have corrupted.
+    """
+
+    src: np.ndarray
+    dst: np.ndarray
+    phase: np.ndarray
+    drop: np.ndarray
+    n_trans: int
+    n_rows: int
+
+
+def _relax_block(nside, spin, tol, lmax, lo, hi):
+    """``(target, phase, relax)`` for rings ``lo:hi`` only, without any full-grid array."""
+    n_lon = 4 * nside
+    sizes = ring_pixel_counts(nside)[lo:hi]
+    phi0 = ring_first_longitude(nside)[lo:hi]
+    m = np.arange(n_lon) - n_lon // 2
+    mid = (sizes // 2)[:, None]
+    b = (m[None, :] + mid) % sizes[:, None] - mid
+    target = b + n_lon // 2
+    j = np.arange(n_lon)[None, :]
+    resolved = (j >= n_lon // 2 - mid) & (j < n_lon // 2 + mid)
+    env = mode_pole_envelope(nside, spin, lmax, rings=slice(lo, hi))
+    relax = (~resolved) & (env > tol)
+    return target, b, phi0, m, relax
+
+
+def dfs_fold_sparse(
+    nside: int, spin: int = 0, tol: float = 1e-2, lmax: int = None, block: int = 64
+) -> FoldPlan:
+    """``dfs_fold_plan(half=True)`` without ever forming a full-grid array.
+
+    The dense plan is three ``(4*nside+1, 4*nside)`` arrays -- 0.4 GB at nside 1024 and
+    1.6 GB at 2048 -- of which only a few percent of entries say anything: the rest is
+    "this slot stays where it is". This walks the rings in blocks and keeps only the
+    entries that move, which is the same information in a few MB.
+
+    Equivalent to deriving the same indices from ``dfs_fold_plan(..., half=True)``, and
+    tested to be bit-identical to it.
+    """
+    n_rings = 4 * nside - 1
+    n_lon = 4 * nside
+    n_rows = n_rings + 2  # [north pole, rings, south pole]
+    src, dst, phases = [], [], []
+    for lo in range(0, n_rings, block):
+        hi = min(lo + block, n_rings)
+        target, b, phi0, m, relax = _relax_block(nside, spin, tol, lmax, lo, hi)
+        rr, cc = np.nonzero(relax)
+        if rr.size == 0:
+            continue
+        rows = rr + lo + 1  # ring i sits at DFS row i+1
+        src.append(cc * n_rows + rows)
+        dst.append(target[rr, cc] * n_rows + rows)
+        phases.append(np.exp(1j * (m[cc] - b[rr, cc]) * phi0[rr]))
+
+    empty_i = np.empty(0, dtype=np.intp)
+    src = np.concatenate(src).astype(np.intp) if src else empty_i
+    dst = np.concatenate(dst).astype(np.intp) if dst else empty_i
+    phase = np.concatenate(phases) if phases else np.empty(0, dtype=complex)
+
+    # A pole row inherits the aliasing of the rings its Lagrange fill reads, so a slot
+    # is dropped there if a relaxed mode lives in it or folds onto it.
+    npts = pole_stencil_rows(nside)
+    drops = [src]
+    for pole_row, (lo, hi) in enumerate(((0, npts), (n_rings - npts, n_rings))):
+        target, _, _, _, relax = _relax_block(nside, spin, tol, lmax, lo, hi)
+        rr, cc = np.nonzero(relax)
+        bad = np.unique(np.concatenate((cc, target[rr, cc])))
+        row = 0 if pole_row == 0 else n_rings + 1
+        drops.append(bad * n_rows + row)
+    drop = np.unique(np.concatenate(drops)).astype(np.intp)
+    return FoldPlan(src, dst, phase, drop, n_lon, n_rows)
 
 
 def _pole_lagrange_weights(nodes: np.ndarray, x0: float) -> np.ndarray:

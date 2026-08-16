@@ -47,6 +47,7 @@ from scipy.sparse.linalg import cg, lsmr, LinearOperator
 from . import _openmp
 from .cg import cg_normal_equations, weighted_norm2
 from .data_interpolation import create_latitude_array
+from .double_fourier_sphere import FoldPlan
 
 logger = logging.getLogger(__name__)
 
@@ -355,19 +356,26 @@ def _fold_ops(fold, n_trans, M_samples):
     """
     if fold is None:
         return None, None
-    target = np.asarray(fold[0])
-    phase = np.asarray(fold[1])
-    if target.shape != (M_samples, n_trans) or phase.shape != target.shape:
-        raise ValueError(
-            f"fold arrays must be ({M_samples}, {n_trans}), got {target.shape}"
-        )
-
-    # (column c, row r) sits at c * M + r in a C-contiguous (n_trans, M) buffer.
-    moved = target != np.arange(n_trans)[None, :]
-    rel_r, rel_c = np.nonzero(moved)
-    src = (rel_c * M_samples + rel_r).astype(np.intp)
-    dst = (target[rel_r, rel_c] * M_samples + rel_r).astype(np.intp)
-    ph = phase[rel_r, rel_c]
+    if isinstance(fold, FoldPlan):
+        if (fold.n_trans, fold.n_rows) != (n_trans, M_samples):
+            raise ValueError(
+                f"fold plan is for ({fold.n_trans}, {fold.n_rows}), "
+                f"solver wants ({n_trans}, {M_samples})"
+            )
+        src, dst, ph = fold.src, fold.dst, fold.phase
+    else:
+        target = np.asarray(fold[0])
+        phase = np.asarray(fold[1])
+        if target.shape != (M_samples, n_trans) or phase.shape != target.shape:
+            raise ValueError(
+                f"fold arrays must be ({M_samples}, {n_trans}), got {target.shape}"
+            )
+        # (column c, row r) sits at c * M + r in a C-contiguous (n_trans, M) buffer.
+        moved = target != np.arange(n_trans)[None, :]
+        rel_r, rel_c = np.nonzero(moved)
+        src = (rel_c * M_samples + rel_r).astype(np.intp)
+        dst = (target[rel_r, rel_c] * M_samples + rel_r).astype(np.intp)
+        ph = phase[rel_r, rel_c]
     ph_conj = np.conj(ph)
 
     # compact the destinations so the scatter accumulator is O(R), not O(n_trans * M)
@@ -515,7 +523,15 @@ def _cg_nufft_forward_half(
     # positions. Storing it that way costs a few MB instead of a few hundred, and the
     # weighting becomes a broadcast multiply plus a sparse zeroing.
     drop = None
-    if sample_mask is None:
+    if isinstance(fold, FoldPlan):
+        if sample_mask is not None:
+            raise ValueError(
+                "a fold plan carries its own dropped entries; pass sample_mask=None"
+            )
+        drop = fold.drop
+        lost = np.bincount(drop // Mh, weights=w[drop % Mh], minlength=n_trans)
+        norm = float((w.sum() - lost).mean())
+    elif sample_mask is None:
         norm = np.sum(w)
     else:
         mask = np.asarray(sample_mask)
@@ -541,7 +557,10 @@ def _cg_nufft_forward_half(
             buf.reshape(-1)[drop] = 0.0
         return buf
 
-    fold_h = None if fold is None else (fold[0][rows], fold[1][rows])
+    if fold is None or isinstance(fold, FoldPlan):
+        fold_h = fold
+    else:
+        fold_h = (fold[0][rows], fold[1][rows])
     fold_apply, fold_adjoint = _fold_ops(fold_h, n_trans, Mh)
     # ``_fold_ops`` has copied everything it needs into its own index arrays, and these
     # row selections are two more full-size arrays. At nside 1024 they are 0.4 GB.
@@ -829,6 +848,11 @@ def cg_nufft_forward(
     def mat_to_vec(mat):
         return mat.ravel()
 
+    if isinstance(fold, FoldPlan):
+        raise ValueError(
+            "a fold plan is in the half-DFS layout; the full-domain solve needs the "
+            "dense (target, phase) pair. Pass spin= so the half-domain path is used."
+        )
     fold_apply, fold_adjoint = _fold_ops(fold, n_trans, M_samples)
 
     # Define NUFFT operators with batch processing

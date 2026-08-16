@@ -95,7 +95,9 @@ def ring_alias_target(nside: int) -> (np.ndarray, np.ndarray, np.ndarray):
     return target, phase, resolved
 
 
-def mode_pole_envelope(nside: int, spin: int = 0, lmax: int = None) -> np.ndarray:
+def mode_pole_envelope(
+    nside: int, spin: int = 0, lmax: int = None, rings: slice = None
+) -> np.ndarray:
     """Largest ``|c_m(theta_r)|`` a band-limited spin-s field can carry, as a fraction of
     that mode's own peak over latitude.
 
@@ -109,10 +111,15 @@ def mode_pole_envelope(nside: int, spin: int = 0, lmax: int = None) -> np.ndarra
     mode's peak; ``(theta/2)^4`` predicts 2.6e-8, ``(l*theta/2)^4/4!`` predicts 1.7e-2).
 
     ``lmax`` defaults to the pipeline band ``2*nside``, i.e. the worst case over the band.
+    ``rings`` restricts the result to a slice of rings, so a caller working in blocks
+    never has to hold the whole ``(4*nside-1, 4*nside)`` array.
     """
     if lmax is None:
         lmax = 2 * nside
-    theta = np.deg2rad(90.0 - create_latitude_array(nside))[:, None]
+    theta = np.deg2rad(90.0 - create_latitude_array(nside))
+    if rings is not None:
+        theta = theta[rings]
+    theta = theta[:, None]
     n_lon = 4 * nside
     m = np.arange(n_lon) - n_lon // 2
     a = np.abs(m + spin).astype(float)[None, :]
