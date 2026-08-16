@@ -324,21 +324,34 @@ def _fold_ops(fold, n_trans, M_samples):
     turns the model's wide-band longitude spectrum at each latitude into what the
     HEALPix ring at that latitude actually measures -- a scatter-add over alias
     families -- and ``adjoint`` is the matching gather, so the pair is an exact adjoint
-    (checked to 1.6e-15) and LSMR/CG stay valid.
+    and LSMR/CG stay valid.
 
-    Both work on the ``(n_trans, M_samples)`` layout the solvers use, and both RETURN
-    that layout C-contiguous, so the callers' ``np.ascontiguousarray`` is a no-op.
+    Both work on the ``(n_trans, M_samples)`` layout the solvers use, and both return
+    that layout C-contiguous.
 
-    This used to index in the ``(M_samples, n_trans)`` layout, which cost a transpose on
-    the way in and another on the way out, and it scattered ``t.real`` and ``t.imag``
-    separately -- two ``bincount`` passes over stride-16 views of a complex array.
-    Building the index in the solver's own layout and scattering ONCE over the buffer
-    viewed as interleaved float64 is bit-identical (0.0 on both directions, adjointness
-    1.5e-14) and 2.0-2.4x faster; with the copy the callers no longer need, apply goes
-    27.9 ms to 8.3 ms at nside 256. The fold was 34.6% of a matrix-vector product before
-    this (``tools/precond_diagnostics/d37_iter_cost.py``, ``d38_fold_fast.py``).
+    Each takes an optional ``out``. Passing the input array itself is allowed and makes
+    the operation in place, which is what keeps the solver's peak memory down; see the
+    disjointness note below for why that is safe.
 
-    ``np.bincount`` (not ``np.add.at``) does the scatter: same result, ~10x faster.
+    Representation
+    --------------
+    The fold is stored as IDENTITY PLUS A SPARSE CORRECTION rather than as a dense
+    per-entry index and phase. Three facts make that exact:
+
+    * an entry that stays in its own slot carries phase exactly ``1.0``;
+    * only the RELAXED entries move, 2.8% of the array at nside 256 and falling with
+      resolution;
+    * an entry always moves onto a slot that itself stays put, so the set of sources
+      and the set of destinations are disjoint.
+
+    So the correction is three arrays of length R, the number of relaxed entries, in
+    place of six of shape ``(n_trans, M_samples)``. Disjointness is also what licenses
+    the in-place form: zeroing the sources cannot destroy a destination, and writing
+    the gathered sources cannot disturb a value still to be read.
+
+    Duplicate destinations (several relaxed modes aliasing onto one slot) are summed by
+    ``np.bincount`` over the COMPACT destination set, so the accumulator is O(R) rather
+    than the size of the array.
     """
     if fold is None:
         return None, None
@@ -348,35 +361,53 @@ def _fold_ops(fold, n_trans, M_samples):
         raise ValueError(
             f"fold arrays must be ({M_samples}, {n_trans}), got {target.shape}"
         )
-    size = M_samples * n_trans
-    # (column c, row r) sits at c * M + r in a C-contiguous (n_trans, M) buffer and
-    # scatters onto (target[r, c], r), i.e. target[r, c] * M + r.
-    flat = (
-        (target.T * M_samples + np.arange(M_samples)[None, :]).astype(np.intp).ravel()
-    )
-    pair = np.empty(2 * size, dtype=np.intp)
-    pair[0::2] = 2 * flat
-    pair[1::2] = 2 * flat + 1
-    phase_t = np.ascontiguousarray(phase.T)
-    conj_phase_t = np.ascontiguousarray(np.conj(phase.T))
 
-    # Scratch reused across calls. ``apply`` and ``adjoint`` keep separate output
-    # buffers so a caller may hold both results at once.
-    tbuf = np.empty((n_trans, M_samples), dtype=np.complex128)
-    abuf = np.empty((n_trans, M_samples), dtype=np.complex128)
-    abuf_flat = abuf.reshape(-1)
+    # (column c, row r) sits at c * M + r in a C-contiguous (n_trans, M) buffer.
+    moved = target != np.arange(n_trans)[None, :]
+    rel_r, rel_c = np.nonzero(moved)
+    src = (rel_c * M_samples + rel_r).astype(np.intp)
+    dst = (target[rel_r, rel_c] * M_samples + rel_r).astype(np.intp)
+    ph = phase[rel_r, rel_c]
+    ph_conj = np.conj(ph)
 
-    def apply(model):
-        np.multiply(model, phase_t, out=tbuf)
-        acc = np.bincount(
-            pair, weights=tbuf.view(np.float64).ravel(), minlength=2 * size
-        )
-        return acc.view(np.complex128).reshape(n_trans, M_samples)
+    # compact the destinations so the scatter accumulator is O(R), not O(n_trans * M)
+    uniq, inv = np.unique(dst, return_inverse=True)
+    inv = inv.astype(np.intp).ravel()
+    pair = np.empty(2 * inv.size, dtype=np.intp)
+    pair[0::2] = 2 * inv
+    pair[1::2] = 2 * inv + 1
+    acc_len = 2 * uniq.size
 
-    def adjoint(residual):
-        np.take(residual.reshape(-1), flat, out=abuf_flat)
-        np.multiply(abuf, conj_phase_t, out=abuf)
-        return abuf
+    # apply and adjoint keep SEPARATE lazy buffers, so a caller may hold both results
+    # at once; sharing one silently makes the second call clobber the first.
+    scratch = [None, None]
+
+    def _out_for(model, out, slot):
+        if out is None:
+            b = scratch[slot]
+            if b is None or b.shape != model.shape:
+                b = np.empty(model.shape, dtype=np.complex128)
+                scratch[slot] = b
+            out = b
+        if out is not model:
+            np.copyto(out, model)
+        return out
+
+    def apply(model, out=None):
+        flat_in = model.reshape(-1)
+        vals = flat_in[src] * ph  # read the sources before anything is overwritten
+        out = _out_for(model, out, 0)
+        flat = out.reshape(-1)
+        flat[src] = 0.0
+        acc = np.bincount(pair, weights=vals.view(np.float64), minlength=acc_len)
+        flat[uniq] += acc.view(np.complex128)
+        return out
+
+    def adjoint(residual, out=None):
+        gathered = residual.reshape(-1)[dst] * ph_conj
+        out = _out_for(residual, out, 1)
+        out.reshape(-1)[src] = gathered
+        return out
 
     return apply, adjoint
 
@@ -504,51 +535,58 @@ def _cg_nufft_forward_half(
     # row selections are two more full-size arrays. At nside 1024 they are 0.4 GB.
     del fold_h
 
-    # Every array the matrix-vector product touches is allocated once here and written
-    # in place below. The temporaries this replaces were about 40% of a threaded
-    # iteration -- seven arrays of (n_trans, Mh) or (n_trans, K+1) per product, none of
-    # which the thread split can help with -- and they set the solver's peak memory,
-    # which is what gates nside 2048.
-    full = np.zeros((n_trans, N_modes), dtype=np.complex128)
+    # THREE buffers carry the whole matrix-vector product, and every step below writes
+    # into one of them rather than allocating. ``coef`` doubles as the expanded
+    # coefficient vector on the way out and the adjoint NUFFT's output on the way back
+    # -- the first is dead by the time the second is written -- and the entire data-side
+    # chain (fold, weights, adjoint fold) runs in place on ``gbuf``, which the fold's
+    # source/destination disjointness makes exact. This is what the solver's peak
+    # memory is, and it gates nside 2048.
+    coef = np.zeros((n_trans, N_modes), dtype=np.complex128)
     gbuf = np.zeros((n_trans, Mh), dtype=np.complex128)
-    obuf = np.zeros((n_trans, N_modes), dtype=np.complex128)
-    ybuf = np.empty((n_trans, Mh), dtype=np.complex128)
     rbuf = np.empty((n_trans, K + 1), dtype=np.complex128)
-    tbuf = np.empty((n_trans, K), dtype=np.complex128)
     rflat = rbuf.reshape(-1)
     par = parity[:, None]
 
     def expand(ch):
-        # Write the symmetric half straight into ``full`` and read the mirrored half
+        # Write the symmetric half straight into ``coef`` and read the mirrored half
         # back out of it. Columns K..2K and 0..K-1 are disjoint, so the reversed read
         # and the write do not overlap and no scratch copy is needed.
-        np.multiply(ch, scale, out=full[:, K:])
-        np.multiply(par, full[:, 2 * K : K : -1], out=full[:, :K])
-        full[:, K] *= even
-        return full
+        np.multiply(ch, scale, out=coef[:, K:])
+        np.multiply(par, coef[:, 2 * K : K : -1], out=coef[:, :K])
+        coef[:, K] *= even
+        return coef
 
     def restrict(fl):
-        np.copyto(rbuf, fl[:, K:])
-        np.multiply(par, fl[:, K - 1 :: -1], out=tbuf)
-        rbuf[:, 1:] += tbuf
+        # ``out[:, 0] = fl[:, K]`` and ``out[:, 1:] = fl[:, K+1:] + par * reversed``.
+        # Forming the reversed product directly in ``rbuf[:, 1:]`` and adding the
+        # forward half to it drops the scratch the other order would need.
+        np.multiply(par, fl[:, K - 1 :: -1], out=rbuf[:, 1:])
+        rbuf[:, 1:] += fl[:, K + 1 :]
+        rbuf[:, 0] = fl[:, K]
         np.multiply(rbuf, scale, out=rbuf)
         rbuf[:, 0] *= even
         return rbuf
 
     def adjoint_of(samples):
-        np.multiply(samples, weights, out=ybuf)
-        y = fold_adjoint(ybuf) if fold_adjoint is not None else ybuf
-        plan_adjoint.execute(y, obuf)
-        restrict(obuf)
+        if samples is not gbuf:
+            np.copyto(gbuf, samples)
+        np.multiply(gbuf, weights, out=gbuf)
+        if fold_adjoint is not None:
+            fold_adjoint(gbuf, out=gbuf)
+        plan_adjoint.execute(gbuf, coef)
+        restrict(coef)
         np.divide(rbuf, norm, out=rbuf)
         return rflat
 
     def apply_AHA(vec):
         plan_forward.execute(expand(vec.reshape(n_trans, K + 1)), gbuf)
-        y = fold_apply(gbuf) if fold_apply is not None else gbuf
-        return adjoint_of(y)
+        if fold_apply is not None:
+            fold_apply(gbuf, out=gbuf)
+        return adjoint_of(gbuf)
 
     bh = np.ascontiguousarray(f_samples[:, rows])
+    bw2 = weighted_norm2(bh, weights)  # before ``adjoint_of`` overwrites ``gbuf``
     # ``adjoint_of`` returns a view of ``rbuf``, which the iteration overwrites, so the
     # right-hand side -- which must survive the whole solve -- takes a copy.
     rhs = adjoint_of(bh).copy()
@@ -580,7 +618,7 @@ def _cg_nufft_forward_half(
         sol, info = cg_normal_equations(
             apply_AHA,
             rhs,
-            weighted_norm2(bh, weights),
+            bw2,
             norm=float(norm),
             rtol=rtol,
             maxiter=maxiter,

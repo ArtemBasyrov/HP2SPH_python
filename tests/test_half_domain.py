@@ -50,7 +50,15 @@ def _dfs(healpix_map, spin=0):
 
 
 @pytest.mark.parametrize("spin", [0, 2])
-def test_fold_ops_match_the_reference_bit_for_bit(nside, spin):
+def test_fold_ops_match_the_dense_reference(nside, spin):
+    """The sparse fold against a dense scatter of every entry.
+
+    The adjoint is a pure gather and stays BIT-identical. ``apply`` is not, and must
+    not be asserted to be: the sparse form adds each slot's own (identity) contribution
+    first and the folded-in ones afterwards, where the dense reference sums the whole
+    alias family in index order. That is a different summation order for the same sum,
+    so the two agree to rounding rather than exactly. Measured at 1 ulp.
+    """
     n_trans, M = 4 * nside, 8 * nside
     target, phase, _ = dfs_fold_plan(nside, spin, 1e-2)
     fast_a, fast_j = _fold_ops((target, phase), n_trans, M)
@@ -58,8 +66,34 @@ def test_fold_ops_match_the_reference_bit_for_bit(nside, spin):
     rng = np.random.default_rng(0)
     g = rng.standard_normal((n_trans, M)) + 1j * rng.standard_normal((n_trans, M))
     y = rng.standard_normal((n_trans, M)) + 1j * rng.standard_normal((n_trans, M))
-    assert np.array_equal(fast_a(g), ref_a(g))
+    got, want = fast_a(g), ref_a(g)
+    assert np.abs(got - want).max() <= 8 * np.finfo(float).eps * np.abs(want).max()
     assert np.array_equal(fast_j(y), ref_j(y))
+
+
+@pytest.mark.parametrize("spin", [0, 2])
+def test_fold_ops_in_place_matches_the_out_of_place_form(nside, spin):
+    """Passing the input as ``out`` is what keeps the solver's peak memory down.
+
+    It is only sound because a relaxed entry always targets a slot that itself stays
+    put, so sources and destinations are disjoint -- zeroing a source cannot destroy a
+    destination, and writing a gathered source cannot disturb a value still to be read.
+    That disjointness is asserted here too, since the in-place form is wrong without it.
+    """
+    n_trans, M = 4 * nside, 8 * nside
+    target, phase, _ = dfs_fold_plan(nside, spin, 1e-2)
+    moved = target != np.arange(n_trans)[None, :]
+    r, c = np.nonzero(moved)
+    assert not moved[r, target[r, c]].any(), "a destination is itself a source"
+    assert np.all(phase[~moved] == 1.0), "an entry that stays put must carry phase 1"
+
+    apply, adjoint = _fold_ops((target, phase), n_trans, M)
+    rng = np.random.default_rng(0)
+    g = rng.standard_normal((n_trans, M)) + 1j * rng.standard_normal((n_trans, M))
+    for op in (apply, adjoint):
+        ref = op(g).copy()
+        buf = g.copy()
+        assert np.array_equal(op(buf, out=buf), ref)
 
 
 def test_fold_ops_return_contiguous_solver_layout(nside):
