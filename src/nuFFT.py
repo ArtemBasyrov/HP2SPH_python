@@ -37,14 +37,17 @@ Synthesis (``cg_nufft_backward`` / ``inverse_nuFFT``) is a plain NUFFT evaluatio
 """
 
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import finufft
 from scipy.sparse.linalg import cg, lsmr, LinearOperator
 
 from . import _openmp
+from ._threads import (  # noqa: F401  (re-exported for callers/tests)
+    WORKER_MIN_TRANSFORMS,
+    _executor,
+    default_workers,
+)
 from .cg import cg_normal_equations, weighted_norm2
 from .data_interpolation import create_latitude_array
 from .double_fourier_sphere import FoldPlan
@@ -171,43 +174,10 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
     return f_hat, 0
 
 
-_EXECUTORS = {}
-
-
-def _executor(workers):
-    """A process-lifetime thread pool of the given size, created on first use."""
-    ex = _EXECUTORS.get(workers)
-    if ex is None:
-        ex = ThreadPoolExecutor(max_workers=workers)
-        _EXECUTORS[workers] = ex
-    return ex
-
-
-# Below this many transforms the thread hand-off costs more than the split saves.
-# Measured crossover, spin forward, alternating A/B: 0.31x at 32 transforms, 0.72x at
-# 64, 1.24x at 128, 1.63x at 256.
-WORKER_MIN_TRANSFORMS = 128  # nside 32
-
-
-def default_workers(n_trans: int = None) -> int:
-    """How many threads the latitude solve splits its transform batch over.
-
-    Set ``HP2SPH_NUFFT_WORKERS`` to override; 1 disables the split. Otherwise it is the
-    core count capped at 7, above which the measured gain flattens.
-
-    ``n_trans`` is the batch size. Small batches return 1: the per-call thread hand-off
-    is fixed while the work per thread shrinks, so below ``WORKER_MIN_TRANSFORMS`` the
-    split is a slowdown rather than a speed-up.
-    """
-    env = os.environ.get("HP2SPH_NUFFT_WORKERS")
-    if env:
-        try:
-            return max(1, int(env))
-        except ValueError:
-            pass
-    if n_trans is not None and n_trans < WORKER_MIN_TRANSFORMS:
-        return 1
-    return max(1, min(7, os.cpu_count() or 1))
+# The thread-pool policy is shared with the numpy stages; see src/_threads.py. The
+# measured crossover for THIS batch (spin forward, alternating A/B) is 0.31x at 32
+# transforms, 0.72x at 64, 1.24x at 128, 1.63x at 256, which is where
+# WORKER_MIN_TRANSFORMS = 128 comes from.
 
 
 class _BatchPlan:

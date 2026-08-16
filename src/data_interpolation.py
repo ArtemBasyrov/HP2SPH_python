@@ -4,11 +4,24 @@ import time
 import numpy as np
 from scipy.special import gammaln
 
+from ._threads import default_workers, run_blocks
+
 logger = logging.getLogger(__name__)
 
 # Rows per block when applying the per-ring phase reference. Chosen so the temporary
 # stays a few MB at any nside rather than scaling with the map.
 _PHASE_BLOCK = 64
+
+# Byte budget for one equatorial FFT call's transient. Rows per call are derived from
+# it, so the temporary is a few MB at any nside instead of scaling with the map -- and
+# so small maps, where the transient was never the problem, still go in a single call.
+_FFT_BLOCK_BYTES = 8 << 20
+
+# Below this many rings the thread hand-off costs more than splitting the rows saves.
+# Measured (threaded against serial, same process, t_min of 3): 0.55x at nside 32,
+# 0.88x at 64, 1.01x at 128, 1.35x at 256, 1.87x at 512, 2.44x at 1024, 3.01x at 2048.
+# nside 128 is 4*128-1 = 511 rings, which is where the split starts paying.
+_MIN_THREADED_RINGS = 511
 
 
 def get_ring_indices(nside: int) -> np.ndarray:
@@ -247,20 +260,42 @@ def transform_healpix_to_grid(
     # Dividing data into rings
     ring_data = [healpix_map[start : end + 1] for start, end, nring in ring_info]
 
-    # Processing of equatorial rings
-    # Every equatorial ring has 4*nside pixels, so the whole belt is one batched
-    # FFT over the last axis.
-    fft_coeff[nside - 1 : 3 * nside] = np.fft.fft(
-        np.array(ring_data[nside - 1 : 3 * nside]),
-        n=4 * nside,
-        axis=-1,
-        norm="forward",
-    )
+    # Every stage below writes disjoint row ranges of ``fft_coeff``, so splitting the
+    # rows across threads gives exactly the serial answer. numpy's pocketfft releases
+    # the GIL, so the split scales; ``workers`` is 1 below the crossover.
+    workers = default_workers(n_rings) if n_rings >= _MIN_THREADED_RINGS else 1
 
-    # Processing of polar rings
-    for i in range(nside - 1):
-        fft_coeff[i] = process_polar_ring(ring_data[i])
-        fft_coeff[n_rings - 1 - i] = process_polar_ring(ring_data[n_rings - 1 - i])
+    # Processing of equatorial rings. Every equatorial ring has 4*nside pixels, so the
+    # belt is a batched FFT over the last axis rather than a loop over rings.
+    n_belt = 2 * nside + 1
+
+    def equatorial_block(lo, hi):
+        # In sub-blocks, because stacking the whole belt and transforming it in one
+        # call holds two arrays the size of ``fft_coeff`` itself -- 1.1 GB of transient
+        # at nside 2048 -- and with the rows split across threads every worker would
+        # hold its own. pocketfft transforms each row independently, so a shorter batch
+        # is bit-identical to the corresponding slice of a longer one.
+        step = max(1, _FFT_BLOCK_BYTES // (4 * nside * 16))
+        for a in range(lo, hi, step):
+            b = min(a + step, hi)
+            fft_coeff[nside - 1 + a : nside - 1 + b] = np.fft.fft(
+                np.array(ring_data[nside - 1 + a : nside - 1 + b]),
+                n=4 * nside,
+                axis=-1,
+                norm="forward",
+            )
+
+    run_blocks(equatorial_block, n_belt, workers)
+
+    # Processing of polar rings. The rings are ragged, so this stays a loop over
+    # individual FFTs; what is threaded is a contiguous BLOCK of rings per worker,
+    # since one ring is far too little work to hand off.
+    def polar_block(lo, hi):
+        for i in range(lo, hi):
+            fft_coeff[i] = process_polar_ring(ring_data[i])
+            fft_coeff[n_rings - 1 - i] = process_polar_ring(ring_data[n_rings - 1 - i])
+
+    run_blocks(polar_block, nside - 1, workers)
 
     # Reference every ring's coefficients to a common phi=0 origin. Each ring's
     # first pixel is offset by phi_first, so its mode-m FFT coefficient carries a
@@ -268,13 +303,17 @@ def transform_healpix_to_grid(
     # the SIGNED frequency (numpy FFT order), so use fftfreq, not arange.
     m_signed = np.fft.fftfreq(4 * nside) * (4 * nside)
     phi0 = ring_first_longitude(nside)
+
     # Blocked, because the full phase array is the same size as ``fft_coeff`` itself and
     # ``np.outer`` builds a second one of the same size before ``np.exp`` does. At nside
     # 1024 that pair is 0.4 GB of transient for a multiply that is done row by row
     # anyway; at nside 2048 it is 1.6 GB.
-    for lo in range(0, n_rings, _PHASE_BLOCK):
-        hi = min(lo + _PHASE_BLOCK, n_rings)
-        fft_coeff[lo:hi] *= np.exp(-1j * np.outer(phi0[lo:hi], m_signed))
+    def phase_block(lo, hi):
+        for a in range(lo, hi, _PHASE_BLOCK):
+            b = min(a + _PHASE_BLOCK, hi)
+            fft_coeff[a:b] *= np.exp(-1j * np.outer(phi0[a:b], m_signed))
+
+    run_blocks(phase_block, n_rings, workers)
 
     # Back to map space. ``map_rows = k`` returns only the first and last k rings,
     # stacked, and transforms just those: the only consumer of the map is the polar

@@ -3,6 +3,7 @@ from typing import NamedTuple
 import numpy as np
 import healpy as hp
 
+from ._threads import default_workers, run_blocks
 from .data_interpolation import (
     create_latitude_array,
     mode_pole_envelope,
@@ -111,6 +112,19 @@ def _pole_stencils(orig: np.ndarray, spin: int):
     return north, south
 
 
+# Below this many rings the thread hand-off costs more than splitting the rows saves;
+# the same crossover the interpolation stage measures.
+_MIN_THREADED_RINGS = 511
+
+
+def _shifted_into(dst: np.ndarray, src: np.ndarray) -> None:
+    """Write ``np.fft.fftshift(src, axes=1)`` into ``dst`` with a single copy."""
+    n_lon = src.shape[1]
+    shift = n_lon // 2
+    dst[:, :shift] = src[:, n_lon - shift :]
+    dst[:, shift:] = src[:, : n_lon - shift]
+
+
 def DFS(
     mp: np.ndarray, fft_coeff: np.ndarray, spin: int = 0, half: bool = False
 ) -> (np.ndarray, np.ndarray):
@@ -133,10 +147,26 @@ def DFS(
         # only content beyond the two pole rows is a verbatim copy of ``mp``.
         half_map = None
         half_fft = np.empty((n_rings + 2, n_lon), dtype=complex)
-        half_fft[0] = np.fft.fft(north, n=n_lon, norm="forward")
-        half_fft[1 : n_rings + 1] = fft_coeff
-        half_fft[n_rings + 1] = np.fft.fft(south, n=n_lon, norm="forward")
-        return half_map, np.fft.fftshift(half_fft, axes=1)
+        # The fftshift to natural ordering is folded into the copy. Doing it afterwards
+        # reads and writes the whole array a second time and holds a second full-size
+        # array while it does -- 0.27 GB extra at nside 1024, and the array is the
+        # largest thing this stage produces. A shift along one axis is a permutation of
+        # columns, so writing the two column ranges straight into their destination is
+        # exactly equal, not merely close.
+        _shifted_into(half_fft[0:1], np.fft.fft(north, n=n_lon, norm="forward")[None])
+        _shifted_into(
+            half_fft[n_rings + 1 : n_rings + 2],
+            np.fft.fft(south, n=n_lon, norm="forward")[None],
+        )
+        # Rows are independent, so the body is split across threads; each block writes
+        # only its own rows.
+        body = half_fft[1 : n_rings + 1]
+        run_blocks(
+            lambda lo, hi: _shifted_into(body[lo:hi], fft_coeff[lo:hi]),
+            n_rings,
+            default_workers(n_rings) if n_rings >= _MIN_THREADED_RINGS else 1,
+        )
+        return half_map, half_fft
 
     south_part = _mirror_map(mp, spin)
     double_map = np.concatenate((mp, south_part), axis=0)
