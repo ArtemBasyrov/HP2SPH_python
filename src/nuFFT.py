@@ -360,14 +360,23 @@ def _fold_ops(fold, n_trans, M_samples):
     phase_t = np.ascontiguousarray(phase.T)
     conj_phase_t = np.ascontiguousarray(np.conj(phase.T))
 
+    # Scratch reused across calls. ``apply`` and ``adjoint`` keep separate output
+    # buffers so a caller may hold both results at once.
+    tbuf = np.empty((n_trans, M_samples), dtype=np.complex128)
+    abuf = np.empty((n_trans, M_samples), dtype=np.complex128)
+    abuf_flat = abuf.reshape(-1)
+
     def apply(model):
-        t = model * phase_t
-        acc = np.bincount(pair, weights=t.view(np.float64).ravel(), minlength=2 * size)
+        np.multiply(model, phase_t, out=tbuf)
+        acc = np.bincount(
+            pair, weights=tbuf.view(np.float64).ravel(), minlength=2 * size
+        )
         return acc.view(np.complex128).reshape(n_trans, M_samples)
 
     def adjoint(residual):
-        gathered = residual.reshape(-1)[flat].reshape(n_trans, M_samples)
-        return gathered * conj_phase_t
+        np.take(residual.reshape(-1), flat, out=abuf_flat)
+        np.multiply(abuf, conj_phase_t, out=abuf)
+        return abuf
 
     return apply, adjoint
 
@@ -491,32 +500,48 @@ def _cg_nufft_forward_half(
 
     fold_h = None if fold is None else (fold[0][rows], fold[1][rows])
     fold_apply, fold_adjoint = _fold_ops(fold_h, n_trans, Mh)
+    # ``_fold_ops`` has copied everything it needs into its own index arrays, and these
+    # row selections are two more full-size arrays. At nside 1024 they are 0.4 GB.
+    del fold_h
 
+    # Every array the matrix-vector product touches is allocated once here and written
+    # in place below. The temporaries this replaces were about 40% of a threaded
+    # iteration -- seven arrays of (n_trans, Mh) or (n_trans, K+1) per product, none of
+    # which the thread split can help with -- and they set the solver's peak memory,
+    # which is what gates nside 2048.
     full = np.zeros((n_trans, N_modes), dtype=np.complex128)
     gbuf = np.zeros((n_trans, Mh), dtype=np.complex128)
     obuf = np.zeros((n_trans, N_modes), dtype=np.complex128)
+    ybuf = np.empty((n_trans, Mh), dtype=np.complex128)
+    rbuf = np.empty((n_trans, K + 1), dtype=np.complex128)
+    tbuf = np.empty((n_trans, K), dtype=np.complex128)
+    rflat = rbuf.reshape(-1)
     par = parity[:, None]
 
     def expand(ch):
-        cs = ch * scale
-        full[:, K:] = cs
+        # Write the symmetric half straight into ``full`` and read the mirrored half
+        # back out of it. Columns K..2K and 0..K-1 are disjoint, so the reversed read
+        # and the write do not overlap and no scratch copy is needed.
+        np.multiply(ch, scale, out=full[:, K:])
+        np.multiply(par, full[:, 2 * K : K : -1], out=full[:, :K])
         full[:, K] *= even
-        full[:, :K] = par * cs[:, :0:-1]
         return full
 
     def restrict(fl):
-        out = fl[:, K:].copy()
-        out[:, 1:] += par * fl[:, K - 1 :: -1]
-        out *= scale
-        out[:, 0] *= even
-        return out
+        np.copyto(rbuf, fl[:, K:])
+        np.multiply(par, fl[:, K - 1 :: -1], out=tbuf)
+        rbuf[:, 1:] += tbuf
+        np.multiply(rbuf, scale, out=rbuf)
+        rbuf[:, 0] *= even
+        return rbuf
 
     def adjoint_of(samples):
-        y = samples * weights
-        if fold_adjoint is not None:
-            y = fold_adjoint(y)
-        plan_adjoint.execute(np.ascontiguousarray(y), obuf)
-        return (restrict(obuf) / norm).ravel()
+        np.multiply(samples, weights, out=ybuf)
+        y = fold_adjoint(ybuf) if fold_adjoint is not None else ybuf
+        plan_adjoint.execute(y, obuf)
+        restrict(obuf)
+        np.divide(rbuf, norm, out=rbuf)
+        return rflat
 
     def apply_AHA(vec):
         plan_forward.execute(expand(vec.reshape(n_trans, K + 1)), gbuf)
@@ -524,7 +549,9 @@ def _cg_nufft_forward_half(
         return adjoint_of(y)
 
     bh = np.ascontiguousarray(f_samples[:, rows])
-    rhs = adjoint_of(bh)
+    # ``adjoint_of`` returns a view of ``rbuf``, which the iteration overwrites, so the
+    # right-hand side -- which must survive the whole solve -- takes a copy.
+    rhs = adjoint_of(bh).copy()
     n_half = n_trans * (K + 1)
     if level is None and eta is None and monitor is None:
         A = LinearOperator(
