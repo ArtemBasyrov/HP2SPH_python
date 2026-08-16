@@ -34,7 +34,7 @@ import healpy as hp
 from benchmarks.common import quiet
 from src.FSHT import to_healpy_alm, from_healpy_alm
 from src.spin_transform import forward_spin, backward_spin
-from src.pipeline import forward_C, backward_map
+from src.pipeline import ANALYSIS_EPS, forward_C, backward_map
 
 # ``src.pipeline`` is the repo's side-effect-free wiring of the four pipeline
 # stages -- the same composition ``main.forward`` wraps with FITS I/O and the same
@@ -195,22 +195,31 @@ class HP2SPH(Backend):
         import time
 
         from src.data_interpolation import transform_healpix_to_grid
-        from src.double_fourier_sphere import DFS
+        from src.double_fourier_sphere import DFS, pole_stencil_rows
         from src.nuFFT import apply_nuFFT
         from src.FSHT import FSHT
+
+        # Same route selection as pipeline.forward_C: the default compact CG band
+        # goes half-domain, the square-band SVD variant needs the full sample set.
+        kw = self._nufft_kw(nside)
+        half = kw.get("solver", "cg") == "cg" and kw.get("solve_modes") is None
+        if half:
+            kw.setdefault("eps", ANALYSIS_EPS)
 
         out = {}
         with quiet():
             t = time.perf_counter()
-            upsampled, fft_coeff = transform_healpix_to_grid(mp)
+            upsampled, fft_coeff = transform_healpix_to_grid(
+                mp, map_rows=pole_stencil_rows(nside) if half else None
+            )
             out["data_interpolation"] = time.perf_counter() - t
 
             t = time.perf_counter()
-            _, dfs = DFS(upsampled, fft_coeff)
+            _, dfs = DFS(upsampled, fft_coeff, spin=0, half=half)
             out["DFS"] = time.perf_counter() - t
 
             t = time.perf_counter()
-            fft_lat = apply_nuFFT(dfs, **self._nufft_kw(nside))
+            fft_lat = apply_nuFFT(dfs, spin=0, half_domain=half, **kw)
             out["nuFFT"] = time.perf_counter() - t
 
             t = time.perf_counter()
@@ -310,23 +319,32 @@ class HP2SPH(Backend):
         import resource
 
         from src.data_interpolation import transform_healpix_to_grid
-        from src.double_fourier_sphere import DFS
+        from src.double_fourier_sphere import DFS, pole_stencil_rows
         from src.nuFFT import apply_nuFFT
         from src.FSHT import FSHT
 
         def rss_mb():
             return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
 
+        # The square-band variant solves the full latitude sample set; the default
+        # compact CG band takes the half-domain route, as pipeline.forward_C does.
+        kw = self._nufft_kw(nside)
+        half = kw.get("solver", "cg") == "cg" and kw.get("solve_modes") is None
+        if half:
+            kw.setdefault("eps", ANALYSIS_EPS)
+
         gc.collect()
         base = rss_mb()
         out = {}
         with quiet():
-            upsampled, fft_coeff = transform_healpix_to_grid(mp)
+            upsampled, fft_coeff = transform_healpix_to_grid(
+                mp, map_rows=pole_stencil_rows(nside) if half else None
+            )
             out["data_interpolation"] = rss_mb() - base
-            _, dfs = DFS(upsampled, fft_coeff)
+            _, dfs = DFS(upsampled, fft_coeff, spin=0, half=half)
             del upsampled, fft_coeff
             out["DFS"] = rss_mb() - base
-            fft_lat = apply_nuFFT(dfs, **self._nufft_kw(nside))
+            fft_lat = apply_nuFFT(dfs, spin=0, half_domain=half, **kw)
             out["nuFFT"] = rss_mb() - base
             FSHT(fft_lat)
             out["FSHT"] = rss_mb() - base
