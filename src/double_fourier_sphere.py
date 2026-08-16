@@ -51,6 +51,15 @@ def _mirror_map(mp: np.ndarray, spin: int) -> np.ndarray:
     return mirrored * ((-1.0) ** spin)
 
 
+def pole_stencil_rows(nside: int) -> int:
+    """How many rings from each end the pole fill actually reads.
+
+    ``transform_healpix_to_grid(map_rows=...)`` takes this so it can return just those
+    rows instead of the whole grid.
+    """
+    return max(2, min(POLE_INTERP_NPTS, nside - 1))
+
+
 def _pole_stencils(orig: np.ndarray, spin: int):
     """The two pole rows, computed from the edge rings alone.
 
@@ -60,12 +69,19 @@ def _pole_stencils(orig: np.ndarray, spin: int):
     longitude -- so those few rows can be formed directly and the southern half of the
     map never has to exist.
 
-    ``orig`` is the ``(4*nside-1, 4*nside)`` grid of original rings. Returns the north
-    and south pole rows, identical to what ``interpolate_polar_rings`` produces.
+    ``orig`` is the ``(4*nside-1, 4*nside)`` grid of original rings, or just its first
+    and last ``pole_stencil_rows(nside)`` rows stacked -- only those are read, so
+    ``transform_healpix_to_grid(map_rows=...)`` can supply the short form and skip the
+    inverse FFT over the whole grid. Returns the north and south pole rows, identical to
+    what ``interpolate_polar_rings`` produces.
     """
     n_rings, n_lon = orig.shape
     nside = n_lon // 4
-    npts = max(2, min(POLE_INTERP_NPTS, nside - 1))
+    npts = pole_stencil_rows(nside)
+    if n_rings < 2 * npts:
+        raise ValueError(
+            f"the pole fill needs {npts} rings from each end; got {n_rings} rows"
+        )
     latitudes = create_latitude_array(nside)
     sgn = (-1.0) ** spin
     half_turn = n_lon // 2

@@ -262,3 +262,52 @@ def test_half_domain_rejects_a_full_height_array(nside):
     _, full = DFS(upsampled, fft_coeff, spin=2)
     with pytest.raises(ValueError, match="half_domain expects"):
         apply_nuFFT(full, solver="cg", spin=2, half_domain=True)
+
+
+def test_map_rows_returns_exactly_the_pole_stencil_slices(nside):
+    """The short map form must be bit-identical to the slices it replaces.
+
+    The pole fill is the only consumer of the map, and it reads
+    ``pole_stencil_rows(nside)`` rings from each end. Transforming just those is
+    bit-identical to slicing the full inverse FFT, so this is a pure saving.
+    """
+    from src.double_fourier_sphere import pole_stencil_rows
+
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    for mp in (
+        rng.standard_normal(npix),
+        rng.standard_normal(npix) + 1j * rng.standard_normal(npix),
+    ):
+        k = pole_stencil_rows(nside)
+        full, fc_full = transform_healpix_to_grid(mp)
+        edge, fc_edge = transform_healpix_to_grid(mp, map_rows=k)
+        assert np.array_equal(fc_full, fc_edge)
+        assert edge.shape == (2 * k, 4 * nside)
+        assert np.array_equal(edge[:k], full[:k])
+        assert np.array_equal(edge[k:], full[-k:])
+
+
+@pytest.mark.parametrize("spin", [0, 2])
+def test_dfs_half_accepts_the_short_map(nside, spin):
+    """``DFS(half=True)`` must give the same answer from the short map as the full one."""
+    from src.double_fourier_sphere import pole_stencil_rows
+
+    rng = np.random.default_rng(0)
+    npix = 12 * nside * nside
+    mp = rng.standard_normal(npix) + (1j * rng.standard_normal(npix) if spin else 0)
+    k = pole_stencil_rows(nside)
+    full, fc = transform_healpix_to_grid(mp)
+    edge, _ = transform_healpix_to_grid(mp, map_rows=k)
+    _, from_full = DFS(full, fc, spin=spin, half=True)
+    _, from_edge = DFS(edge, fc, spin=spin, half=True)
+    assert np.array_equal(from_full, from_edge)
+
+
+def test_pole_stencils_rejects_too_few_rows(nside):
+    from src.double_fourier_sphere import _pole_stencils, pole_stencil_rows
+
+    k = pole_stencil_rows(nside)
+    too_short = np.zeros((2 * k - 1, 4 * nside))
+    with pytest.raises(ValueError, match="rings from each end"):
+        _pole_stencils(too_short, 0)

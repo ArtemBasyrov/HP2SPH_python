@@ -70,7 +70,12 @@ from .FSHT import (
     _spin_conv_phase,
 )
 from .data_interpolation import transform_healpix_to_grid, transform_grid_to_healpix
-from .double_fourier_sphere import DFS, DFS_inverse, dfs_fold_plan
+from .double_fourier_sphere import (
+    DFS,
+    DFS_inverse,
+    dfs_fold_plan,
+    pole_stencil_rows,
+)
 from .nuFFT import apply_nuFFT, inverse_nuFFT, nyquist_discrepancy
 
 SPIN = 2  # the polarization spin; the native routes run the +SPIN pass only
@@ -155,7 +160,12 @@ def _spin_F_hp2sph(
     """
     z = Q + 1j * U if spin > 0 else Q - 1j * U
     nside = hp.npix2nside(np.asarray(z).shape[0])
-    upsampled, fft_coeff = transform_healpix_to_grid(z)
+    # Only the rings the pole fill reads are brought back to map space; the inverse
+    # FFT over the whole grid is 0.27 GB at nside 1024 and its result is used for
+    # twelve rows.
+    upsampled, fft_coeff = transform_healpix_to_grid(
+        z, map_rows=pole_stencil_rows(nside)
+    )
     # Only the mirror-fundamental rows are built: the latitude solve restricts to them
     # anyway, and the mirrored half is the largest single item in the transform's peak
     # memory.
