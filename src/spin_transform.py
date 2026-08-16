@@ -102,6 +102,7 @@ def _spin_F_library(Q, U, theta, phi, spin):
 ALIAS_TOL = 1e-2  # relative amplitude below which a polar-ring mode is asserted zero
 ALIAS_ETA = 1e-3  # stagnation threshold that stops the latitude CG
 ALIAS_RTOL = 1e-7  # fallback stopping rule, in case the residual never stagnates
+ALIAS_EPS = 1e-6  # NUFFT tolerance for the latitude solve; see ``_spin_F_hp2sph``
 CG_MAXITER = 20000  # a safety cap only
 
 
@@ -112,6 +113,7 @@ def _spin_F_hp2sph(
     alias_tol=ALIAS_TOL,
     rtol=ALIAS_RTOL,
     maxiter=CG_MAXITER,
+    eps=ALIAS_EPS,
     level=None,
     theta=None,
     eta=ALIAS_ETA,
@@ -165,6 +167,7 @@ def _spin_F_hp2sph(
         fold=(target, phase),
         rtol=rtol,
         maxiter=maxiter,
+        eps=eps,
         spin=spin,
         level=level,
         eta=eta,
