@@ -43,6 +43,7 @@ import finufft
 from scipy.sparse.linalg import cg, lsmr, LinearOperator
 
 from . import _openmp
+from .cg import cg_normal_equations, weighted_norm2
 from .data_interpolation import create_latitude_array
 
 logger = logging.getLogger(__name__)
@@ -291,7 +292,19 @@ def _is_mirror_symmetric(f_samples, mu, parity, rtol=1e-8):
 
 
 def _cg_nufft_forward_half(
-    x, f_samples, N_modes, plan_half, rtol, maxiter, eps, sample_mask, fold
+    x,
+    f_samples,
+    N_modes,
+    plan_half,
+    rtol,
+    maxiter,
+    eps,
+    sample_mask,
+    fold,
+    level=None,
+    eta=None,
+    delay=5,
+    monitor=None,
 ):
     """``cg_nufft_forward`` restricted to the mirror-symmetric subspace."""
     mu, rows, mult, parity, scale, even = plan_half
@@ -365,12 +378,45 @@ def _cg_nufft_forward_half(
         y = fold_apply(gbuf) if fold_apply is not None else gbuf
         return adjoint_of(y)
 
-    rhs = adjoint_of(np.ascontiguousarray(f_samples[:, rows]))
+    bh = np.ascontiguousarray(f_samples[:, rows])
+    rhs = adjoint_of(bh)
     n_half = n_trans * (K + 1)
-    A = LinearOperator(shape=(n_half, n_half), matvec=apply_AHA, dtype=np.complex128)
-    sol, info = cg(
-        A, rhs, x0=np.zeros(n_half, dtype=np.complex128), rtol=rtol, maxiter=maxiter
-    )
+    if level is None and eta is None and monitor is None:
+        A = LinearOperator(
+            shape=(n_half, n_half), matvec=apply_AHA, dtype=np.complex128
+        )
+        sol, info = cg(
+            A, rhs, x0=np.zeros(n_half, dtype=np.complex128), rtol=rtol, maxiter=maxiter
+        )
+    else:
+        mon = None
+        if monitor is not None:
+
+            def mon(k, rho, rrel, vec):
+                monitor(
+                    k,
+                    rho,
+                    rrel,
+                    lambda: expand(vec.reshape(n_trans, K + 1)).copy().T,
+                )
+
+        if np.size(norm) != 1:
+            raise NotImplementedError(
+                "the data residual is defined against one least-squares problem; a "
+                "per-column norm rescales each block separately. Use fold=..."
+            )
+        sol, info = cg_normal_equations(
+            apply_AHA,
+            rhs,
+            weighted_norm2(bh, weights),
+            norm=float(norm),
+            rtol=rtol,
+            maxiter=maxiter,
+            level=level,
+            eta=eta,
+            delay=delay,
+            monitor=mon,
+        )
     return expand(sol.reshape(n_trans, K + 1)).copy().T, info
 
 
@@ -469,6 +515,10 @@ def cg_nufft_forward(
     sample_mask=None,
     fold=None,
     spin=None,
+    level=None,
+    eta=None,
+    delay=5,
+    monitor=None,
 ):
     # Get dimensions
     n_trans = f_samples.shape[0]  # = 4*nside (number of longitude transforms)
@@ -486,7 +536,19 @@ def cg_nufft_forward(
         f_samples, plan_half[0], plan_half[3]
     ):
         return _cg_nufft_forward_half(
-            x, f_samples, N_modes, plan_half, rtol, maxiter, eps, sample_mask, fold
+            x,
+            f_samples,
+            N_modes,
+            plan_half,
+            rtol,
+            maxiter,
+            eps,
+            sample_mask,
+            fold,
+            level=level,
+            eta=eta,
+            delay=delay,
+            monitor=monitor,
         )
 
     # Precompute NUFFT plans with batch processing (n_trans transforms)
@@ -583,7 +645,32 @@ def cg_nufft_forward(
     # condition number; the default rtol is tightened to 1e-9 (from 1e-6) because the
     # loose tol left the nside=32 round trip at ~1e-2 instead of ~1e-9. At nside>=64
     # the conditioning defeats CG regardless of rtol -- use solver="svd" there.
-    f_hat_recon_flat, info = cg(A, rhs, x0=f_hat_guess, rtol=rtol, maxiter=maxiter)
+    if level is None and eta is None and monitor is None:
+        f_hat_recon_flat, info = cg(A, rhs, x0=f_hat_guess, rtol=rtol, maxiter=maxiter)
+    else:
+        if np.size(norm) != 1:
+            raise NotImplementedError(
+                "the data residual is defined against one least-squares problem; a "
+                "per-column norm rescales each block separately. Use fold=..."
+            )
+        mon = None
+        if monitor is not None:
+
+            def mon(k, rho, rrel, vec):
+                monitor(k, rho, rrel, lambda: vec.reshape(n_trans, N_modes).T.copy())
+
+        f_hat_recon_flat, info = cg_normal_equations(
+            apply_AHA,
+            rhs,
+            weighted_norm2(f_samples, weights),
+            norm=float(norm),
+            rtol=rtol,
+            maxiter=maxiter,
+            level=level,
+            eta=eta,
+            delay=delay,
+            monitor=mon,
+        )
 
     # Reshape back to (4*nside, N_modes)
     return f_hat_recon_flat.reshape(n_trans, N_modes).T, info
@@ -667,6 +754,10 @@ def apply_nuFFT(
     sample_mask=None,
     fold=None,
     spin=None,
+    level=None,
+    eta=None,
+    delay=5,
+    monitor=None,
 ) -> np.ndarray:
     """Latitude analysis (the DFS grid's only ill-conditioned stage).
 
@@ -719,6 +810,19 @@ def apply_nuFFT(
     SVD; ``rtol``/``maxiter``/``eps`` tune CG and the NUFFT. ``maxiter=None`` (the
     default) leaves the iteration cap to the solver; every solve here is stopped by
     ``rtol`` long before it, so the cap is a safety net rather than a knob.
+
+    ``level`` (``solver="cg"`` only) stops the iteration by the discrepancy principle
+    instead: halt at the first iterate whose weighted data residual
+    ``||b - A f_hat||_W`` falls to ``level``. Give it the size of the error in the
+    forward model, which for a folded spin solve is set by ``alias_tol``. Unlike
+    ``rtol`` it is stated in the units of the data, so it does not need recalibrating
+    per resolution. ``rtol`` remains active as the fallback for the case where the
+    least-squares residual never reaches ``level``.
+
+    ``monitor``, if given, is called as ``monitor(k, rho, rrel, get_spectrum)`` after
+    each CG iteration. ``rho`` is the data residual relative to ``||b||_W``, ``rrel``
+    is the ratio ``rtol`` tests, and ``get_spectrum()`` returns the current iterate in
+    the same layout as the return value.
     """
     _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
     nside = mp.shape[1] // 4
@@ -769,6 +873,10 @@ def apply_nuFFT(
             sample_mask=sample_mask,
             fold=fold,
             spin=spin,
+            level=level,
+            eta=eta,
+            delay=delay,
+            monitor=monitor,
         )
         if info != 0:
             logger.warning("CG did not converge (info=%s)", info)

@@ -99,26 +99,47 @@ def _spin_F_library(Q, U, theta, phi, spin):
     return fourier2spinsph(spinsph_analysis(z, spin), spin)
 
 
-ALIAS_TOL = 1e-2  # see ``_spin_F_hp2sph``
-ALIAS_RTOL = 1e-7
-CG_MAXITER = 20000  # a safety cap only; rtol stops it in O(100) iterations
+ALIAS_TOL = 1e-2  # relative amplitude below which a polar-ring mode is asserted zero
+ALIAS_ETA = 1e-3  # stagnation threshold that stops the latitude CG
+ALIAS_RTOL = 1e-7  # fallback stopping rule, in case the residual never stagnates
+CG_MAXITER = 20000  # a safety cap only
 
 
-def _spin_F_hp2sph(Q, U, spin, alias_tol=ALIAS_TOL, rtol=ALIAS_RTOL):
+def _spin_F_hp2sph(
+    Q,
+    U,
+    spin,
+    alias_tol=ALIAS_TOL,
+    rtol=ALIAS_RTOL,
+    maxiter=CG_MAXITER,
+    level=None,
+    eta=ALIAS_ETA,
+    delay=5,
+    monitor=None,
+):
     """Hand-rolled HP2SPH analysis -> spin-SH ``F`` array (no resampling).
 
     The latitude fit uses ``dfs_fold_plan``: model each polar ring's ALIAS SUM exactly,
-    and keep the "unresolved mode = 0" assertion wherever the spin envelope says the mode
-    is negligible on that ring (below ``alias_tol``). That is full rank, so plain CG
-    solves it in O(100) iterations.
+    and keep the "unresolved mode = 0" assertion wherever the spin envelope says the
+    mode is negligible on that ring (below ``alias_tol``). That is full rank, so plain
+    CG solves it.
 
-    ``alias_tol`` and ``rtol`` trade accuracy against cost, and they interact: a smaller
-    ``alias_tol`` relaxes more assertions, which models the field better but frees more
-    directions for CG to resolve, so it needs a tighter ``rtol`` to pay off at all
-    (``alias_tol=1e-4`` at ``rtol=1e-6`` is WORSE than the defaults and 4x dearer).
-    Measured at nside 64, seed 0, slope 1.5, relative ``C_l^EE`` error over
-    ``l = 124..128``: 1.97e-5 at 0.82 s (``rtol=1e-6``), 1.18e-5 at 1.46 s (the
-    defaults), 3.85e-6 at 9.85 s (``alias_tol=1e-3, rtol=1e-8``).
+    ``alias_tol`` sets the size of the error in the forward operator, so it sets how
+    accurate an answer the data can support. Below about 1e-2 it stops mattering: the
+    alias assertion is no longer the dominant model error, and tightening it only adds
+    iterations.
+
+    ``eta`` stops the iteration. The relaxed alias families make this system ill-posed,
+    so CG semiconverges -- the physical answer improves, bottoms out, and then decays as
+    the iteration resolves directions the data do not determine. The stop is Morozov's
+    discrepancy principle with the level read off the iteration itself: the weighted
+    data residual falls to the model error and stagnates there, so the run is halted
+    once the squared data residual has dropped by less than a fraction ``eta`` over the
+    preceding ``delay`` iterations. It is dimensionless and needs no per-resolution
+    tuning. Raise it to stop sooner, lower it to converge further.
+
+    ``rtol`` is only a fallback for the case where the residual never stagnates, and
+    ``maxiter`` a safety cap above that.
     """
     z = Q + 1j * U if spin > 0 else Q - 1j * U
     nside = hp.npix2nside(np.asarray(z).shape[0])
@@ -131,8 +152,12 @@ def _spin_F_hp2sph(Q, U, spin, alias_tol=ALIAS_TOL, rtol=ALIAS_RTOL):
         sample_mask=keep,
         fold=(target, phase),
         rtol=rtol,
-        maxiter=CG_MAXITER,
+        maxiter=maxiter,
         spin=spin,
+        level=level,
+        eta=eta,
+        delay=delay,
+        monitor=monitor,
     )
     return FSHT_spin(fft_lat, spin)
 
