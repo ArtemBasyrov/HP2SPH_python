@@ -175,3 +175,45 @@ def test_main_forward_rejects_an_iqu_stack():
 
     with pytest.raises(ValueError, match="single HEALPix map"):
         main.forward(np.zeros((3, 12 * 4**2)))
+
+
+@pytest.mark.ft
+def test_forward_C_half_domain_route_is_bit_identical(healpix_map):
+    """The scalar forward's half-domain route reproduces the full one exactly.
+
+    ``forward_C`` builds only the mirror-fundamental rows of the DFS and only the
+    rings the pole fill reads. The latitude solve restricts to those rows anyway, so
+    this is a pure restructuring: the outputs must be equal bit for bit, not merely
+    close.
+    """
+    from src.data_interpolation import transform_healpix_to_grid
+    from src.double_fourier_sphere import DFS
+    from src.nuFFT import apply_nuFFT
+    from src.FSHT import FSHT
+    from src.pipeline import ANALYSIS_EPS
+
+    upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
+    _, dfs = DFS(upsampled, fft_coeff)
+    full = FSHT(apply_nuFFT(dfs, spin=0, eps=ANALYSIS_EPS))
+
+    assert np.array_equal(forward_C(healpix_map), full)
+
+
+@pytest.mark.ft
+def test_forward_C_keeps_the_full_domain_for_the_square_band(nside, healpix_map):
+    """The square band opts out: the SVD solver takes the full latitude sample set.
+
+    Only the CG path understands the half layout, so a route selection that fed it a
+    half-height array would be silently wrong rather than raising.
+    """
+    from src.data_interpolation import transform_healpix_to_grid
+    from src.double_fourier_sphere import DFS
+    from src.nuFFT import apply_nuFFT
+    from src.FSHT import FSHT
+
+    kw = dict(solver="svd", solve_modes=8 * nside + 1)
+    upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
+    _, dfs = DFS(upsampled, fft_coeff)
+    full = FSHT(apply_nuFFT(dfs, spin=0, **kw))
+
+    assert np.array_equal(forward_C(healpix_map, **kw), full)
