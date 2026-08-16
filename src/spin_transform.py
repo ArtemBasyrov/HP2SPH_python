@@ -112,6 +112,23 @@ ALIAS_EPS = 1e-6  # NUFFT tolerance for the latitude solve; see ``_spin_F_hp2sph
 CG_MAXITER = 20000  # a safety cap only
 
 
+def _spin_nufft_kw():
+    """The latitude-solve settings ``_spin_F_hp2sph`` ships with.
+
+    Exposed so a profiler or diagnostic can reproduce the shipped configuration instead
+    of re-specifying it and drifting from it. ``alias_tol`` is for the fold plan; the
+    rest go to ``apply_nuFFT``.
+    """
+    return {
+        "alias_tol": ALIAS_TOL,
+        "solver": "cg",
+        "rtol": ALIAS_RTOL,
+        "maxiter": CG_MAXITER,
+        "eps": ALIAS_EPS,
+        "eta": ALIAS_ETA,
+    }
+
+
 def _spin_F_hp2sph(
     Q,
     U,

@@ -39,8 +39,10 @@ GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
 # Ordinal ramp for the pipeline stages: one hue, light->dark, ordered because the
 # stages have a natural order. Starts at step 250, the lightest that still clears
-# 2:1 on this surface.
-STAGE_RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#184f95"]
+# 2:1 on this surface. FIVE steps, because the spin forward has five stages and a
+# four-step ramp wrapped -- giving FSHT the same colour as data_interpolation, which
+# is worse than no ramp at all on a chart whose whole point is which stage is which.
+STAGE_RAMP = ["#a8cbf5", "#7aaeea", "#4a8bdd", "#2a6ab4", "#153f77"]
 
 LINE_KW = dict(linewidth=1.8, markersize=5.0, markeredgewidth=0)
 
@@ -143,6 +145,45 @@ def _save(fig, name, legend_rows=2):
     print(f"  wrote {os.path.relpath(path)}")
 
 
+def _fmt_time(t):
+    """Compact enough for a tick label across four orders of magnitude."""
+    if t >= 100:
+        return f"{t:.0f} s"
+    if t >= 1:
+        return f"{t:.3g} s"
+    return f"{1000 * t:.0f} ms"
+
+
+def _thread_note(channel):
+    """What the stored run actually used, so a figure never claims '1 thread' wrongly."""
+    path = os.path.join(RESULTS_DIR, f"speed_{channel}.json")
+    try:
+        meta, _ = load_results(path)
+    except Exception:
+        return "1 thread"
+    t = (meta or {}).get("threads")
+    if not t:
+        return "1 thread"
+    n = t.get("requested", 1)
+    return "1 thread" if n == 1 else f"{n} threads requested"
+
+
+def _report_dates(path, records):
+    """Print when the data behind a figure was computed, on every render.
+
+    A figure is a picture of a JSON file at some past moment, and nothing about the
+    PNG says which moment. Re-running a benchmark and forgetting to re-render leaves a
+    stale figure that looks current -- which has happened here, with polarization
+    accuracy figures sitting 15 days behind their data. Printing the date range makes
+    that visible in the render log instead of requiring someone to check file mtimes.
+    """
+    dates = sorted({str(r.get("_computed_utc", "?"))[:10] for r in records})
+    if not dates:
+        return
+    tag = dates[0] if len(dates) == 1 else "MIXED " + ", ".join(dates)
+    print(f"  [{os.path.basename(path)}] data computed {tag}")
+
+
 def _by(records, **filters):
     return [r for r in records if all(r.get(k) == v for k, v in filters.items())]
 
@@ -160,6 +201,7 @@ def plot_speed(channel):
     if not os.path.exists(path):
         return
     _, records = load_results(path)
+    _report_dates(path, records)
     timed = [r for r in records if r["direction"] in ("forward", "backward")]
     if not timed:
         return
@@ -179,7 +221,7 @@ def plot_speed(channel):
         _title(
             ax,
             f"{'Intensity' if channel == 'I' else 'Polarization'} {direction}",
-            "1 thread, float64, lmax = 2·nside; min of the timed repeats",
+            f"{_thread_note(channel)}, float64, lmax = 2·nside; min of the repeats",
         )
     _legend(fig, axes)
     _save(fig, f"speed_{channel}.png")
@@ -236,10 +278,15 @@ def _plot_stage_profile(records, channel):
     # total, so the eye reads the split wrong. The absolute seconds are in the
     # JSON and in the printed table; the question this chart answers is where the
     # time goes, which is a share.
+    if len(names) > len(STAGE_RAMP):
+        raise ValueError(
+            f"{len(names)} stages but only {len(STAGE_RAMP)} ramp steps; two stages "
+            "would share a colour. Extend STAGE_RAMP rather than letting it wrap."
+        )
     totals = np.array(
         [sum(r["t_min"] for r in stages if r["nside"] == n) for n in nsides]
     )
-    fig, axes = _fig(1, 1, width=6.6, height=4.0)
+    fig, axes = _fig(1, 1, width=8.4, height=4.2)
     ax = axes[0, 0]
     bottom = np.zeros(len(nsides))
     x = np.arange(len(nsides), dtype=float)
@@ -271,20 +318,95 @@ def _plot_stage_profile(records, channel):
         bottom += share
     ax.set_xticks(x)
     ax.set_xticklabels(
-        [f"nside {n}\n{t:.3g} s" for n, t in zip(nsides, totals)], fontsize=8
+        [f"{n}\n{_fmt_time(t)}" for n, t in zip(nsides, totals)], fontsize=7.5
     )
+    ax.set_xlabel("nside (forward wall time beneath)", color=INK_2, fontsize=9)
     ax.set_ylim(0, 100)
     ax.set_ylabel("share of forward wall time (%)", color=INK_2, fontsize=9)
     ax.grid(axis="x", visible=False)
     _title(
         ax,
-        "Where the HP2SPH forward spends its time",
-        "compact-band scalar forward, 1 thread; total time under each bar",
+        f"Where the HP2SPH {'scalar' if channel == 'I' else 'spin-2'} forward "
+        "spends its time",
+        f"{'compact-band scalar' if channel == 'I' else 'spin-2'} forward, "
+        f"{_thread_note(channel)}; total time under each bar",
     )
     # Below the axes, not inside: the bars fill the plot area to 100% at every
     # nside, so an in-axes legend sits on top of the data wherever it is placed.
-    _legend(fig, axes, ncol=4)
+    _legend(fig, axes, ncol=len(names))
     _save(fig, f"speed_stages_{channel}.png", legend_rows=1)
+
+
+def plot_memory(channel):
+    """Peak-RSS build-up for the HP2SPH forward, from ``bench_memory``."""
+    path = os.path.join(RESULTS_DIR, f"memory_{channel}.json")
+    if not os.path.exists(path):
+        return
+    _, records = load_results(path)
+    _report_dates(path, records)
+    _plot_stage_memory(records, channel)
+
+
+def _plot_stage_memory(records, channel):
+    """How the forward's peak RSS climbs stage by stage.
+
+    Peak RSS is a high-water mark, so a stage's cost in isolation is not well defined
+    once earlier arrays are still live. What IS well defined, and what decides whether
+    a resolution runs at all, is the running maximum -- so this is a cumulative line
+    per stage rather than a stacked share.
+    """
+    stages = [r for r in records if r.get("peak_rss_mb") is not None]
+    nsides = sorted({r["nside"] for r in stages})
+    if not stages or max(r["peak_rss_mb"] for r in stages) <= 0:
+        return
+    names = []
+    for r in stages:
+        if r["stage"] not in names:
+            names.append(r["stage"])
+    if len(names) > len(STAGE_RAMP):
+        raise ValueError(
+            f"{len(names)} stages but only {len(STAGE_RAMP)} ramp steps; two stages "
+            "would share a colour. Extend STAGE_RAMP rather than letting it wrap."
+        )
+
+    fig, axes = _fig(1, 1, width=8.4, height=4.2)
+    ax = axes[0, 0]
+    for i, stage in enumerate(names):
+        y = [
+            next(
+                (
+                    r["peak_rss_mb"] / 1024.0
+                    for r in stages
+                    if r["nside"] == n and r["stage"] == stage
+                ),
+                np.nan,
+            )
+            for n in nsides
+        ]
+        ax.plot(
+            nsides,
+            y,
+            marker="o",
+            markersize=4,
+            linewidth=1.8,
+            label=stage,
+            color=STAGE_RAMP[i],
+        )
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(nsides)
+    ax.set_xticklabels([str(n) for n in nsides])
+    ax.set_xlabel("nside", color=INK_2, fontsize=9)
+    ax.set_ylabel("peak RSS above baseline (GB)", color=INK_2, fontsize=9)
+    _style(ax)
+    channel_name = "scalar" if channel == "I" else "spin-2"
+    _title(
+        ax,
+        "How the HP2SPH forward's peak memory builds up",
+        f"{channel_name} forward; running high-water mark after each stage",
+    )
+    _legend(fig, axes, ncol=len(names))
+    _save(fig, f"memory_stages_{channel}.png", legend_rows=1)
 
 
 # --------------------------------------------------------------------------- #
@@ -295,6 +417,7 @@ def plot_accuracy(channel):
     if not os.path.exists(path):
         return
     _, records = load_results(path)
+    _report_dates(path, records)
     fields = ["T"] if channel == "I" else ["E", "B"]
 
     # Canonical order, not alphabetical: the primary regime comes first.
@@ -429,6 +552,7 @@ def plot_roundtrip(channel):
     if not os.path.exists(path):
         return
     _, records = load_results(path)
+    _report_dates(path, records)
     field = "T" if channel == "I" else "E"
     harmonic = _by(records, mode="harmonic", field=field)
     pixel = _by(records, mode="pixel")
@@ -510,8 +634,8 @@ def main(argv=None):
     p.add_argument(
         "--only",
         nargs="+",
-        choices=["speed", "accuracy", "roundtrip"],
-        default=["speed", "accuracy", "roundtrip"],
+        choices=["speed", "memory", "accuracy", "roundtrip"],
+        default=["speed", "memory", "accuracy", "roundtrip"],
     )
     p.add_argument("--channels", nargs="+", choices=["I", "P"], default=["I", "P"])
     args = p.parse_args(argv)
@@ -520,6 +644,8 @@ def main(argv=None):
     for channel in args.channels:
         if "speed" in args.only:
             plot_speed(channel)
+        if "memory" in args.only:
+            plot_memory(channel)
         if "accuracy" in args.only:
             plot_accuracy(channel)
         if "roundtrip" in args.only:

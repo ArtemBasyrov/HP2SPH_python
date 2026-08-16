@@ -1,6 +1,6 @@
 # Benchmarks
 
-Three benchmarks comparing this repository's HP2SPH implementation against **healpy** and **ducc0**.
+Four benchmarks comparing this repository's HP2SPH implementation against **healpy** and **ducc0**: speed, forward accuracy, round trip, and memory.
 
 Speed, forward accuracy against known coefficients, and round-trip fidelity.
 The accuracy and round-trip benchmarks each run in two channels: intensity (`I`) and polarization (`P`).
@@ -11,13 +11,16 @@ Every script writes JSON to `results/` and prints a markdown table.
 ## Running
 
 The suite needs the environment that has all the pipeline dependencies plus the native `libfasttransforms`.
-On this machine that is the `s2fft` micromamba environment.
+On this machine that is the `hp2sph-omp` micromamba environment.
 
 ```bash
-P=/Users/basyrov/micromamba/envs/s2fft/bin/python
+P=/Users/basyrov/micromamba/envs/hp2sph-omp/bin/python
+export HP2SPH_OMP_THREADS=8          # see "Threading" below; needed for healpy
 
-$P -m benchmarks.bench_speed      --channel I
-$P -m benchmarks.bench_speed      --channel P
+$P -m benchmarks.bench_speed      --channel I --threads 8
+$P -m benchmarks.bench_speed      --channel P --threads 8
+$P -m benchmarks.bench_memory     --channel I
+$P -m benchmarks.bench_memory     --channel P
 $P -m benchmarks.bench_accuracy   --channel I
 $P -m benchmarks.bench_accuracy   --channel P
 $P -m benchmarks.bench_roundtrip  --channel I --include-nyquist-corner
@@ -25,8 +28,38 @@ $P -m benchmarks.bench_roundtrip  --channel P --include-nyquist-corner
 $P -m benchmarks.plots
 ```
 
-The default ladders take about half an hour on one core.
 Every script accepts `--nside`, `--backends`, `--seeds` and `--out`.
+
+The speed ladders reach nside 2048 in both channels. At 1024 and 2048 a handful of very
+long calls dominate, so run those two in a separate invocation with `--repeats 1`; the
+store merges on (channel, backend, nside, direction) and each record keeps its own
+`repeats`, so the ladder ends up mixed and says so.
+
+## Threading
+
+`--threads N` asks every backend for N threads. **They do not all honour it the same
+way, and the run metadata records what each was actually told rather than implying they
+match.**
+
+| backend | mechanism | exact? |
+|---|---|---|
+| ducc0 | explicit `nthreads=` argument | yes |
+| HP2SPH | splits its NUFFT batch over N Python threads; FastTransforms threads through OpenMP | yes |
+| healpy 1.20 | **no thread argument at all**; bundled libsharp reads `OMP_NUM_THREADS` | only via the environment |
+
+`src/_bootstrap` pins `OMP_NUM_THREADS=1`, so healpy is single-threaded unless
+`HP2SPH_OMP_THREADS` is exported **before** the run. Measured at nside 256, exporting it
+takes `map2alm` with ring weights from 19.6 ms to 4.6 ms — so a run without it
+**under-reports healpy by roughly 4x** and should not be quoted as a threaded
+comparison.
+
+Setting it does not cost HP2SPH anything: its NUFFT plans ask for one thread each
+regardless of the OpenMP setting, and only the FastTransforms stage gains (0.92 s to
+0.83 s on the spin forward at nside 256). Note that this is the opposite of what naive
+OpenMP threading does to the spin path — see "Threading, and how to get it" in
+`CLAUDE.md`, where letting finufft thread its own batch made the transform 2-3x slower.
+
+Do not set `OMP_NUM_THREADS` or `KMP_DUPLICATE_LIB_OK` by hand; use `HP2SPH_OMP_THREADS`.
 
 Results are written after each cell, so an interrupted run keeps what it finished.
 Re-running skips completed cells; pass `--no-resume` to recompute them.
@@ -90,17 +123,39 @@ The warm-up excludes one-off setup for every backend: FFTW plans, the FastTransf
 This matters most for `hp2sph-square`, whose one-off cost is a cached O(nside³) truncated SVD.
 Its timings are therefore the amortised cost of many transforms at one nside, not the cost of a single cold transform.
 
-Single-threaded is the headline on purpose.
-healpy and ducc0 both scale across cores, while the HP2SPH latitude solve is largely serial.
-A multi-core comparison would measure OpenMP maturity rather than the algorithm.
+The shipped figures are threaded (8 requested); see "Threading" above for what each
+backend could actually be told. Earlier baselines in this file were single-threaded and
+are not comparable to them.
 
 The plot draws `O(N^1.5)` and `O(N log² N)` guide slopes so the measured scaling can be checked rather than assumed.
 HP2SPH's advertised `O(N log² N)` comes entirely from the FastTransforms butterfly algorithm.
 `nm -gU` on this build's `libfasttransforms` shows no butterfly symbols, so it runs the plain O(n³) Givens rotations.
 Expect HP2SPH to sit in the same `O(N^1.5)` class as healpy here.
 
-A second figure breaks the HP2SPH scalar forward into its four stages.
-An end-to-end number cannot say which stage costs what, and the stage split is the only part of the speed story that is actionable.
+A second figure breaks the HP2SPH forward into its stages, for BOTH channels
+(`speed_stages_I.png`, `speed_stages_P.png`). An end-to-end number cannot say which stage
+costs what, and the stage split is the only part of the speed story that is actionable.
+The spin path gets its own profile rather than being read off the scalar one: it builds
+only the mirror-fundamental half of the DFS array, uses a sparse alias-fold plan, and its
+latitude stage is an iterative solve rather than a few CG steps.
+
+## Benchmark 4: memory
+
+`bench_memory.py` records how the HP2SPH forward's peak RSS builds up, stage by stage,
+for both channels (`memory_stages_I.png`, `memory_stages_P.png`). Memory is what decides
+whether a resolution runs at all, so it is measured rather than estimated from array
+shapes — at nside 1024 the transforms' internal workspace turned out to be a larger share
+than the arrays themselves.
+
+**Every cell runs in a fresh subprocess, and that is the whole point.** Peak RSS is a
+process-lifetime high-water mark, so profiling several resolutions in one process reports
+the running maximum of the largest one so far and every later stage reads as free. That
+is not a small distortion: it reported 1 MB where the truth was gigabytes, which is how
+this benchmark came to exist as a separate script instead of a column in `bench_speed`.
+
+The numbers are CUMULATIVE — peak RSS after each stage, above a baseline taken once the
+input map exists. A per-stage cost is not well defined, because a stage's arrays stay
+live into the next one.
 
 ## Benchmark 2: forward accuracy
 
@@ -141,6 +196,42 @@ Both are summarised over four `l` bands, because one number across the whole spe
 Per-`l` curves in the JSON are the median across `--seeds` realisations.
 
 ### Findings that refine the repository's documentation
+
+**Re-baselined 2026-08-16: threaded, ladders to nside 2048, and two new figure families.**
+The rows below this heading that predate that date were single-threaded and are not
+comparable to the threaded ones. Check `_computed_utc` before quoting any of them.
+
+**Threading everyone makes HP2SPH's relative speed WORSE, not better.**
+On the intensity channel, where nothing else changed, 8 threads bought HP2SPH 2.18x at
+nside 512 against 5.68-6.62x for healpy and ducc0.
+The cause is measured: with the C stages threaded, `data_interpolation` and `DFS` — both
+pure serial numpy — are 24-30% of what remains, an Amdahl cap of 2.6-3.0x, and HP2SPH is
+essentially at it.
+So the scalar bottleneck has moved off the latitude solve, and the old "single-threaded
+is the headline on purpose" framing flattered HP2SPH.
+The spin path does not have that problem (`nuFFT` is 81-95% of it), but its threading
+gain must NOT be quoted as a threading result: the stored baseline predates the
+algorithmic work of the same session.
+
+**The speed gap closes with resolution.**
+Polarization forward against healpy ring weights: 45x at nside 512, 13x at 2048.
+Against the two ACCURATE methods at nside 2048 it is 2.1x (healpy `iter=3`) and 7.7x
+(ducc0 `pseudo_analysis`).
+
+**Polarization accuracy extends to nside 256, and the advantage grows.**
+Top-band `C_l^EE`: 29x better than ring weights at nside 256 against 10x at nside 8.
+E->B leakage at nside 256: 2.94e-10 against ring weights 4.05e-7 — **1379x** — and 376x
+against pixel weights.
+
+**ducc0 `pseudo_analysis` is not a converged baseline.**
+Its `cosmology` `C_l` error gets WORSE with resolution (4.04e-8 at nside 32, 8.32e-8 at
+256, with a jump to 8.35e-7 at 64), which is its `maxiter=20` cap, not the algorithm.
+
+**Intensity now costs twice the memory of polarization.**
+Peak RSS at nside 2048: 19.8 GB scalar against 10.1 GB spin.
+Every memory optimisation of 2026-08-16 landed on the spin path; the scalar path still
+builds the full `(8*nside, 4*nside)` DFS array and the full inverse FFT back to map space.
+
 
 Both were measured by this suite.
 They are recorded here so the next person does not have to rediscover them.

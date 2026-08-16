@@ -82,8 +82,12 @@ from benchmarks.common import (
     restrict_to_band,
 )
 
-DEFAULT_NSIDE_I = [8, 16, 32, 64, 128, 256]
-DEFAULT_NSIDE_P = [8, 16, 32, 64]
+# Both ladders reach nside 2048, but the cost is 4 scenarios x len(seeds) transforms per
+# backend per nside, so the top two rungs are hours rather than minutes and are worth
+# running separately with fewer seeds. A cell measured with fewer seeds is still a valid
+# cell -- ``n_seeds`` is stored per record, so the seed count is never implied.
+DEFAULT_NSIDE_I = [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+DEFAULT_NSIDE_P = [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
 DEFAULT_SEEDS = [0, 1, 2, 3]
 
 SCENARIOS = {
@@ -135,14 +139,16 @@ def _leakage_inputs(nside, lmax, seed, pure):
     return {"Q": Q, "U": U}, aE, aB
 
 
-def run(channel, nsides, keys, scenarios, seeds, out_path, resume):
+def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
     chosen = bk.select(keys)
+    applied = bk.set_threads(threads)
     lmin = 2 if channel == "P" else 0
     meta = env_metadata(
         {
             "benchmark": "forward_accuracy",
             "channel": channel,
             "seeds": seeds,
+            "threads": applied,
             "lmax_rule": "2*nside",
             "mmax_cap_rule": "2*nside-1 (keeps alm2map an exact sampler)",
             "note": "per-l curves are the median across seeds",
@@ -359,6 +365,12 @@ def main(argv=None):
     p.add_argument("--nside", type=int, nargs="+", default=None)
     p.add_argument("--backends", nargs="+", default=None)
     p.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS)
+    p.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="threads every backend is asked to use; see benchmarks.backends.set_threads",
+    )
     p.add_argument("--scenarios", nargs="+", default=None)
     p.add_argument("--out", default=None)
     p.add_argument("--no-resume", action="store_true")
@@ -377,6 +389,7 @@ def main(argv=None):
         args.seeds,
         out,
         not args.no_resume,
+        args.threads,
     )
 
 

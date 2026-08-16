@@ -26,6 +26,8 @@ Conventions verified numerically against healpy before this module was written:
   the weighted healpy variants have to go through the IQU path.
 """
 
+import os
+
 import numpy as np
 import healpy as hp
 
@@ -43,6 +45,45 @@ from src.pipeline import forward_C, backward_map
 # --------------------------------------------------------------------------- #
 # Backend interface                                                            #
 # --------------------------------------------------------------------------- #
+# How many threads every backend is asked to use. Set by ``set_threads`` before any
+# transform runs. 1 keeps the historical single-threaded comparison.
+THREADS = 1
+
+
+def set_threads(n):
+    """Ask every backend to use ``n`` threads, and report what each can honour.
+
+    The three families thread by different mechanisms, and only two of them can be
+    set from Python at all:
+
+    * ducc0 takes an explicit ``nthreads`` argument, so it is exact.
+    * HP2SPH splits its NUFFT batch over ``HP2SPH_NUFFT_WORKERS`` Python threads and
+      threads its FastTransforms stage through OpenMP.
+    * healpy 1.20 exposes NO thread argument on ``map2alm``/``alm2map``; its bundled
+      libsharp reads ``OMP_NUM_THREADS``, which ``src/_bootstrap`` pins to 1. Lifting
+      that pin needs ``HP2SPH_OMP_THREADS`` set BEFORE ``src`` is imported, which is
+      the process's business, not this function's.
+
+    Returns a dict recording what was actually applied, so the run metadata says how
+    each backend was configured rather than implying they all match.
+    """
+    global THREADS
+    THREADS = max(1, int(n))
+    os.environ["HP2SPH_NUFFT_WORKERS"] = str(THREADS)
+    omp = os.environ.get("HP2SPH_OMP_THREADS")
+    return {
+        "requested": THREADS,
+        "ducc0": THREADS,
+        "hp2sph_nufft_workers": THREADS,
+        "openmp": omp or "1 (pinned by src/_bootstrap)",
+        "healpy": (
+            omp
+            if omp
+            else "1 -- healpy 1.20 has no nthreads argument and OMP is pinned"
+        ),
+    }
+
+
 class Backend:
     """One (library, configuration) pair.
 
@@ -175,6 +216,120 @@ class HP2SPH(Backend):
             t = time.perf_counter()
             FSHT(fft_lat)
             out["FSHT"] = time.perf_counter() - t
+        return out
+
+    def stage_times_P(self, Q, U, nside, lmax):
+        """Per-stage wall time of the SPIN forward, at the SHIPPED solver settings.
+
+        The settings come from ``spin_transform._spin_nufft_kw`` rather than being
+        repeated here: an earlier version spelled out ``solver="cg"`` and left the
+        tolerance and stopping rule at ``apply_nuFFT``'s defaults, which runs the
+        latitude solve fully converged at ``eps=1e-12`` and reported a profile 3.3x
+        slower than the transform it claims to describe.
+
+        The spin path is not the scalar one with a different flag: it builds only the
+        mirror-fundamental half of the DFS array, uses a sparse alias-fold plan, and
+        its latitude stage is an iterative solve rather than a few CG steps. So it
+        gets its own profile rather than being read off the scalar one.
+        """
+        import time
+
+        from src.data_interpolation import transform_healpix_to_grid
+        from src.double_fourier_sphere import DFS, dfs_fold_sparse, pole_stencil_rows
+        from src.nuFFT import apply_nuFFT
+        from src.FSHT import FSHT_spin
+        from src.spin_transform import SPIN, _spin_nufft_kw
+
+        out = {}
+        z = np.asarray(Q) + 1j * np.asarray(U)
+        with quiet():
+            t = time.perf_counter()
+            up, fc = transform_healpix_to_grid(z, map_rows=pole_stencil_rows(nside))
+            out["data_interpolation"] = time.perf_counter() - t
+
+            t = time.perf_counter()
+            _, dfs = DFS(up, fc, spin=SPIN, half=True)
+            out["DFS"] = time.perf_counter() - t
+
+            t = time.perf_counter()
+            kw = _spin_nufft_kw()
+            plan = dfs_fold_sparse(nside, SPIN, kw.pop("alias_tol"))
+            out["fold_plan"] = time.perf_counter() - t
+
+            t = time.perf_counter()
+            fft_lat = apply_nuFFT(dfs, fold=plan, spin=SPIN, half_domain=True, **kw)
+            out["nuFFT"] = time.perf_counter() - t
+
+            t = time.perf_counter()
+            FSHT_spin(fft_lat, SPIN)
+            out["FSHT"] = time.perf_counter() - t
+        return out
+
+    def stage_memory_P(self, Q, U, nside, lmax):
+        """Peak RSS ABOVE the entry baseline after each stage of the spin forward.
+
+        Cumulative, not per-stage: peak RSS is a high-water mark, so what a stage
+        "costs" in isolation is not a well-defined quantity once earlier arrays are
+        still live. The question this answers is how the high-water mark climbs, which
+        is what decides whether a resolution fits at all.
+        """
+        import gc
+        import resource
+
+        from src.data_interpolation import transform_healpix_to_grid
+        from src.double_fourier_sphere import DFS, dfs_fold_sparse, pole_stencil_rows
+        from src.nuFFT import apply_nuFFT
+        from src.FSHT import FSHT_spin
+        from src.spin_transform import SPIN, _spin_nufft_kw
+
+        def rss_mb():
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+
+        gc.collect()
+        base = rss_mb()
+        out = {}
+        z = np.asarray(Q) + 1j * np.asarray(U)
+        with quiet():
+            up, fc = transform_healpix_to_grid(z, map_rows=pole_stencil_rows(nside))
+            out["data_interpolation"] = rss_mb() - base
+            _, dfs = DFS(up, fc, spin=SPIN, half=True)
+            del up, fc
+            out["DFS"] = rss_mb() - base
+            kw = _spin_nufft_kw()
+            plan = dfs_fold_sparse(nside, SPIN, kw.pop("alias_tol"))
+            out["fold_plan"] = rss_mb() - base
+            fft_lat = apply_nuFFT(dfs, fold=plan, spin=SPIN, half_domain=True, **kw)
+            out["nuFFT"] = rss_mb() - base
+            FSHT_spin(fft_lat, SPIN)
+            out["FSHT"] = rss_mb() - base
+        return out
+
+    def stage_memory_I(self, mp, nside, lmax):
+        """The scalar counterpart of ``stage_memory_P``."""
+        import gc
+        import resource
+
+        from src.data_interpolation import transform_healpix_to_grid
+        from src.double_fourier_sphere import DFS
+        from src.nuFFT import apply_nuFFT
+        from src.FSHT import FSHT
+
+        def rss_mb():
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+
+        gc.collect()
+        base = rss_mb()
+        out = {}
+        with quiet():
+            upsampled, fft_coeff = transform_healpix_to_grid(mp)
+            out["data_interpolation"] = rss_mb() - base
+            _, dfs = DFS(upsampled, fft_coeff)
+            del upsampled, fft_coeff
+            out["DFS"] = rss_mb() - base
+            fft_lat = apply_nuFFT(dfs, **self._nufft_kw(nside))
+            out["nuFFT"] = rss_mb() - base
+            FSHT(fft_lat)
+            out["FSHT"] = rss_mb() - base
         return out
 
 
@@ -337,7 +492,7 @@ class Ducc0(Backend):
                 map=maps,
                 lmax=lmax,
                 spin=spin,
-                nthreads=1,
+                nthreads=THREADS,
                 ringfactor=np.full(info["theta"].size, w),
                 **info,
             )
@@ -345,7 +500,7 @@ class Ducc0(Backend):
             map=maps,
             lmax=lmax,
             spin=spin,
-            nthreads=1,
+            nthreads=THREADS,
             maxiter=self.maxiter,
             epsilon=self.epsilon,
             **info,
@@ -364,7 +519,7 @@ class Ducc0(Backend):
             alm=alm,
             lmax=lmax,
             spin=spin,
-            nthreads=1,
+            nthreads=THREADS,
             **_healpix_sht_info(nside),
         )
 

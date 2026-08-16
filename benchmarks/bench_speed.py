@@ -1,15 +1,23 @@
 """Benchmark 1 -- wall time of forward and backward transforms vs nside.
 
-Every backend is given the *same* work: the same map, the same band
-``lmax = 2*nside`` (the HP2SPH grid's natural band), single threaded, float64.
-Anything else would compare configurations rather than algorithms.
+Every backend is given the *same* work: the same map and the same band
+``lmax = 2*nside`` (the HP2SPH grid's natural band), float64.
 
-Single threaded is the headline on purpose. ducc0 and healpy both scale across
-cores while the HP2SPH pipeline's CG/LSMR latitude solve is largely serial, so a
-multi-core comparison measures OpenMP maturity rather than the algorithm. It is
-also what the repo's existing profiling assumes: ``src/_bootstrap.py`` forces
-``OMP_NUM_THREADS=1`` because several libomp copies in one process crash or hang
-(see ``src/_openmp.py``), so single threaded is the only configuration available.
+``--threads N`` asks every backend for N threads, and the run metadata records what
+each could actually be told, because they do not all honour it the same way:
+
+* ducc0 takes an explicit ``nthreads`` argument, so it is exact.
+* HP2SPH splits its NUFFT batch over N Python threads and threads its FastTransforms
+  stage through OpenMP.
+* healpy 1.20 exposes NO thread argument; its bundled libsharp reads
+  ``OMP_NUM_THREADS``, which ``src/_bootstrap`` pins to 1. To let healpy thread, set
+  ``HP2SPH_OMP_THREADS`` in the ENVIRONMENT before the run -- measured at nside 256,
+  that takes ``map2alm`` with ring weights from 19.6 ms to 4.6 ms, and it does not
+  slow HP2SPH down (0.92 s to 0.83 s on the spin forward, since its NUFFT plans ask
+  for one thread each regardless and only the FSHT stage gains).
+
+**A run without ``HP2SPH_OMP_THREADS`` set therefore under-reports healpy.** Say
+which configuration a number came from whenever one is quoted.
 
 Read the result against the scaling claim, not for a winner: HP2SPH's advertised
 ``O(N log^2 N)`` comes entirely from the FastTransforms butterfly algorithm, and
@@ -22,6 +30,9 @@ Run::
 
     python -m benchmarks.bench_speed --channel I
     python -m benchmarks.bench_speed --channel P --nside 8 16 32 64
+
+    # threaded, the configuration the shipped figures use
+    HP2SPH_OMP_THREADS=8 python -m benchmarks.bench_speed --channel P --threads 8
 """
 
 import argparse
@@ -40,12 +51,14 @@ from benchmarks import backends as bk
 
 import healpy as hp
 
-# Chosen so a full default run lands near half an hour on one core. The
-# polarization ladder stops earlier because the spin forward's folded latitude solve
-# costs ~3-4x per nside doubling (measured 0.03 / 0.09 / 0.46 / 1.46 / 5.26 s at nside
-# 8 / 16 / 32 / 64 / 128), so nside 256 alone would be ~20 s per call.
-DEFAULT_NSIDE_I = [8, 16, 32, 64, 128, 256, 512]
-DEFAULT_NSIDE_P = [8, 16, 32, 64, 128]
+# Both ladders now reach nside 2048, the project's gating resolution. The polarization
+# ladder used to stop at 128 because the spin forward cost ~20 s per call at nside 256;
+# it is now ~1 s there and ~100 s at 2048, so the ladders match. At 1024 and 2048 the
+# cost is dominated by a handful of very long calls, so those two are worth running with
+# ``--repeats 1`` in a separate invocation -- the store merges on
+# (channel, backend, nside, direction) and each record keeps its own ``repeats``.
+DEFAULT_NSIDE_I = [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+DEFAULT_NSIDE_P = [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
 
 KEY_FIELDS = ("channel", "backend", "nside", "direction")
 
@@ -62,8 +75,9 @@ def _inputs(channel, nside, lmax, seed=20260801):
     return {"aE": aE, "aB": aB, "Q": Q, "U": U}
 
 
-def run(channel, nsides, keys, repeats, warmup, out_path, resume, stages):
+def run(channel, nsides, keys, repeats, warmup, out_path, resume, stages, threads=1):
     chosen = bk.select(keys)
+    applied = bk.set_threads(threads)
     meta = env_metadata(
         {
             "benchmark": "speed",
@@ -71,7 +85,12 @@ def run(channel, nsides, keys, repeats, warmup, out_path, resume, stages):
             "repeats": repeats,
             "warmup": warmup,
             "lmax_rule": "2*nside",
-            "note": "single-threaded; times are seconds, min of `repeats` timed calls",
+            "threads": applied,
+            "note": (
+                "times are seconds, min of `repeats` timed calls. `threads` records "
+                "what each backend could actually be told to use -- they are not all "
+                "the same number, see backends.set_threads"
+            ),
         }
     )
     store = common.ResultStore(out_path, meta, KEY_FIELDS)
@@ -122,11 +141,11 @@ def run(channel, nsides, keys, repeats, warmup, out_path, resume, stages):
                     f"peak RSS +{stats['peak_rss_mb']:.0f} MB)"
                 )
 
-        if stages and channel == "I":
-            _stage_profile(store, data, nside, lmax)
+        if stages:
+            _stage_profile(store, data, nside, lmax, channel)
 
     print(f"\nwrote {out_path}")
-    _summary(store, channel)
+    _summary(store, channel, threads)
     return store
 
 
@@ -140,14 +159,23 @@ def _make_call(backend, channel, direction, data, nside, lmax):
     return lambda: backend.backward_P(data["aE"], data["aB"], nside, lmax)
 
 
-def _stage_profile(store, data, nside, lmax):
-    """Where HP2SPH's forward time actually goes, stage by stage."""
+def _stage_profile(store, data, nside, lmax, channel):
+    """Where HP2SPH's forward time actually goes, stage by stage.
+
+    Time only. The stage MEMORY profile lives in ``bench_memory`` because peak RSS is a
+    process-lifetime high-water mark: measured here, every nside after the first would
+    report near zero, since the process has already peaked higher. That needs a fresh
+    subprocess per cell, which does not belong inside a timing loop.
+    """
     backend = bk.BACKENDS["hp2sph"]
-    times = backend.stage_times_I(data["map"], nside, lmax)
+    if channel == "I":
+        times = backend.stage_times_I(data["map"], nside, lmax)
+    else:
+        times = backend.stage_times_P(data["Q"], data["U"], nside, lmax)
     for stage, t in times.items():
         store.add(
             {
-                "channel": "I",
+                "channel": channel,
                 "backend": f"hp2sph::{stage}",
                 "nside": nside,
                 "lmax": lmax,
@@ -165,7 +193,7 @@ def _stage_profile(store, data, nside, lmax):
     print(f"  hp2sph stages:   {parts}")
 
 
-def _summary(store, channel):
+def _summary(store, channel, threads=1):
     records = [
         r
         for r in store.frame()
@@ -186,7 +214,8 @@ def _summary(store, channel):
                 continue
             rows.append([key] + [by_nside.get(n) for n in nsides])
         if rows:
-            print(f"\n### {channel} {direction} -- min wall time (s), 1 thread\n")
+            label = "1 thread" if threads == 1 else f"{threads} threads requested"
+            print(f"\n### {channel} {direction} -- min wall time (s), {label}\n")
             print(
                 markdown_table(
                     rows, ["backend"] + [f"ns{n}" for n in nsides], floatfmt="{:.3e}"
@@ -200,6 +229,16 @@ def main(argv=None):
     p.add_argument("--nside", type=int, nargs="+", default=None)
     p.add_argument("--backends", nargs="+", default=None)
     p.add_argument("--repeats", type=int, default=3)
+    p.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help=(
+            "threads every backend is asked to use. ducc0 honours it exactly and "
+            "HP2SPH splits its NUFFT batch over it; healpy 1.20 has no thread "
+            "argument and needs HP2SPH_OMP_THREADS in the environment instead"
+        ),
+    )
     p.add_argument("--warmup", type=int, default=1)
     p.add_argument("--out", default=None)
     p.add_argument(
@@ -225,6 +264,7 @@ def main(argv=None):
         out,
         not args.no_resume,
         not args.no_stages,
+        args.threads,
     )
 
 
