@@ -510,11 +510,15 @@ def _cg_nufft_forward_half(
     # A mirrored row contributes exactly what its partner does, so dropping it and
     # doubling the partner's weight leaves the least squares (and ``norm``) unchanged.
     w = compute_voronoi_weights_1d(x)[rows] * mult
+    # The weight of entry (c, r) is w[r] where the mask keeps it and 0 where it does
+    # not, so the dense (n_trans, Mh) product is a 1-D vector plus a list of dropped
+    # positions. Storing it that way costs a few MB instead of a few hundred, and the
+    # weighting becomes a broadcast multiply plus a sparse zeroing.
+    drop = None
     if sample_mask is None:
-        weights = w
         norm = np.sum(w)
     else:
-        mask = np.asarray(sample_mask, dtype=float)
+        mask = np.asarray(sample_mask)
         if mask.shape == (M_samples, n_trans):
             mask = mask.T
         if mask.shape != (n_trans, M_samples):
@@ -522,12 +526,20 @@ def _cg_nufft_forward_half(
                 f"sample_mask must be ({n_trans}, {M_samples}) or its transpose, "
                 f"got {np.shape(sample_mask)}"
             )
-        weights = w[None, :] * mask[:, rows]
-        norm = weights.sum(axis=1, keepdims=True)
+        drop = np.flatnonzero(~np.asarray(mask[:, rows], dtype=bool).reshape(-1))
+        lost = np.bincount(drop // Mh, weights=w[drop % Mh], minlength=n_trans)
+        norm = (w.sum() - lost)[:, None]
         if fold is not None:
             norm = norm.mean()
         elif np.any(norm == 0):
             raise ValueError("sample_mask leaves a longitude mode with no samples")
+
+    def weight(buf):
+        """Multiply by the (masked) quadrature weights, in place."""
+        np.multiply(buf, w, out=buf)
+        if drop is not None:
+            buf.reshape(-1)[drop] = 0.0
+        return buf
 
     fold_h = None if fold is None else (fold[0][rows], fold[1][rows])
     fold_apply, fold_adjoint = _fold_ops(fold_h, n_trans, Mh)
@@ -571,7 +583,7 @@ def _cg_nufft_forward_half(
     def adjoint_of(samples):
         if samples is not gbuf:
             np.copyto(gbuf, samples)
-        np.multiply(gbuf, weights, out=gbuf)
+        weight(gbuf)
         if fold_adjoint is not None:
             fold_adjoint(gbuf, out=gbuf)
         plan_adjoint.execute(gbuf, coef)
@@ -586,7 +598,10 @@ def _cg_nufft_forward_half(
         return adjoint_of(gbuf)
 
     bh = np.ascontiguousarray(f_samples[:, rows])
-    bw2 = weighted_norm2(bh, weights)  # before ``adjoint_of`` overwrites ``gbuf``
+    # ||b||_W^2 = <b, W b>, evaluated through the same in-place weighting rather than
+    # by forming a dense weight array just to square against it.
+    np.copyto(gbuf, bh)
+    bw2 = float(np.vdot(bh, weight(gbuf)).real)
     # ``adjoint_of`` returns a view of ``rbuf``, which the iteration overwrites, so the
     # right-hand side -- which must survive the whole solve -- takes a copy.
     rhs = adjoint_of(bh).copy()
