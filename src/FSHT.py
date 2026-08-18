@@ -109,7 +109,9 @@ def preparation(bivar_coeffs: np.ndarray, spin: int = 0) -> np.ndarray:
 
 def FSHT(bivar_coeffs: np.ndarray) -> np.ndarray:
     g = preparation(bivar_coeffs)
-    return _ft_fourier2sph(g)
+    # g is preparation's own output and dies here, so let the transform reuse it
+    # rather than hold a second (L+1, 2L+1) array beside it.
+    return _ft_fourier2sph(g, overwrite=True)
 
 
 SCALE_2PI = 1.0 / (2.0 * np.pi)  # first-principles global gain (see to_healpy_alm)

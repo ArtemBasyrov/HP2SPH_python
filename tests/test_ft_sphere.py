@@ -40,3 +40,38 @@ def test_library_roundtrip(healpix_map):
     assert np.allclose(recovered, g, rtol=0, atol=1e-10), (
         f"max |diff| = {np.max(np.abs(recovered - g)):.2e}"
     )
+
+
+@pytest.mark.parametrize("direction", ["fourier2sph", "sph2fourier"])
+def test_overwrite_matches_the_allocating_path_bit_for_bit(healpix_map, direction):
+    """``overwrite=True`` reuses the input buffer and must not change the answer.
+
+    It exists only to drop a full-size array from the FSHT stage's peak, so
+    equality here has to be exact rather than approximate -- anything else would
+    mean the two paths do different arithmetic.
+    """
+    g = _build_g(healpix_map)
+    fn = getattr(ft_sphere, direction)
+    expected = fn(g.copy())
+    scratch = g.copy()
+    got = fn(scratch, overwrite=True)
+    assert np.array_equal(got, expected)
+    assert got is scratch, "overwrite=True must return the caller's own buffer"
+
+
+def test_default_leaves_the_input_untouched(healpix_map):
+    """Without ``overwrite`` the input survives; ``inverse_FSHT`` relies on this."""
+    g = _build_g(healpix_map)
+    before = g.copy()
+    ft_sphere.fourier2sph(g)
+    assert np.array_equal(g, before)
+
+
+def test_non_contiguous_input_is_handled(healpix_map):
+    """The input is only ever read through ``.real``/``.imag``, so strides are fine."""
+    g = _build_g(healpix_map)
+    padded = np.zeros((g.shape[0], g.shape[1] * 2), dtype=np.complex128)
+    padded[:, ::2] = g
+    view = padded[:, ::2]
+    assert not view.flags["C_CONTIGUOUS"]
+    assert np.array_equal(ft_sphere.fourier2sph(view), ft_sphere.fourier2sph(g))
