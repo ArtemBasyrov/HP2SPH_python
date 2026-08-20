@@ -43,8 +43,28 @@ Calibrate it by measurement on the problem at hand.
 """
 
 import numpy as np
+from scipy.linalg.blas import get_blas_funcs
 
 __all__ = ["cg_normal_equations", "weighted_norm2"]
+
+
+def _axpy_for(*arrays):
+    """``y += a * x`` in one pass, or ``None`` if BLAS cannot be used here.
+
+    The vector updates are single passes over an array the size of the unknowns, and at
+    nside 1024 that is 0.25 GB running at DRAM bandwidth, so the temporary that
+    ``y += a * x`` allocates costs a whole extra pass. BLAS ``axpy`` writes in place with
+    no temporary. It needs contiguous same-dtype arrays, so callers that do not have
+    them fall back to the numpy expression.
+    """
+    if not all(a.flags.c_contiguous for a in arrays):
+        return None
+    if len({a.dtype for a in arrays}) != 1:
+        return None
+    try:
+        return get_blas_funcs("axpy", arrays)
+    except (ValueError, TypeError):
+        return None
 
 
 def weighted_norm2(b, weights):
@@ -150,6 +170,7 @@ def cg_normal_equations(
 
     info = maxiter
     hist = [float(bw2)]  # squared data residual at x = 0
+    axpy = _axpy_for(x, r, p)
     for k in range(1, maxiter + 1):
         Ap = matvec(p)
         pAp = np.vdot(p, Ap).real
@@ -158,8 +179,12 @@ def cg_normal_equations(
             # Stop on the last good iterate rather than take a divergent step.
             break
         alpha = rs / pAp
-        x += alpha * p
-        r -= alpha * Ap
+        if axpy is not None and Ap.flags.c_contiguous and Ap.dtype == x.dtype:
+            axpy(p, x, a=alpha)
+            axpy(Ap, r, a=-alpha)
+        else:
+            x += alpha * p
+            r -= alpha * Ap
         rs_new = np.vdot(r, r).real
         rrel = np.sqrt(rs_new) / b0
         # J is a difference against ||b||_W^2 and can go a few ulp negative once the
@@ -185,6 +210,9 @@ def cg_normal_equations(
             info = 0
             break
 
-        p = r + (rs_new / rs) * p
+        # p = r + beta * p, written as two in-place passes rather than three plus a
+        # fresh allocation every iteration.
+        np.multiply(p, rs_new / rs, out=p)
+        p += r
         rs = rs_new
     return x, info

@@ -558,6 +558,15 @@ def _cg_nufft_forward_half(
         coef[:, K] *= even
         return coef
 
+    # Everything from the weights to the end of ``adjoint_of`` is linear, so dividing
+    # the result by ``norm`` is the same as scaling here -- and ``restrict`` already
+    # multiplies by ``scale``, so the division costs nothing once it is folded in. That
+    # removes a whole read-modify-write pass over an array that is 0.25 GB at nside
+    # 1024 and runs at DRAM bandwidth. ``scale`` itself must NOT be touched: ``expand``
+    # shares it and is on the other side of the operator. The fold is only worth doing
+    # for a scalar ``norm``; a per-column one would make this a full-size array.
+    scale_out = scale / norm if np.size(norm) == 1 else scale
+
     def restrict(fl):
         # ``out[:, 0] = fl[:, K]`` and ``out[:, 1:] = fl[:, K+1:] + par * reversed``.
         # Forming the reversed product directly in ``rbuf[:, 1:]`` and adding the
@@ -565,7 +574,7 @@ def _cg_nufft_forward_half(
         np.multiply(par, fl[:, K - 1 :: -1], out=rbuf[:, 1:])
         rbuf[:, 1:] += fl[:, K + 1 :]
         rbuf[:, 0] = fl[:, K]
-        np.multiply(rbuf, scale, out=rbuf)
+        np.multiply(rbuf, scale_out, out=rbuf)
         rbuf[:, 0] *= even
         return rbuf
 
@@ -577,7 +586,8 @@ def _cg_nufft_forward_half(
             fold_adjoint(gbuf, out=gbuf)
         plan_adjoint.execute(gbuf, coef)
         restrict(coef)
-        np.divide(rbuf, norm, out=rbuf)
+        if scale_out is scale:
+            np.divide(rbuf, norm, out=rbuf)
         return rflat
 
     def apply_AHA(vec):

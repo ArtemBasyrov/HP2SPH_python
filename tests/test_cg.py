@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from scipy.sparse.linalg import cg as scipy_cg
 
-from src.cg import cg_normal_equations, weighted_norm2
+from src.cg import _axpy_for, cg_normal_equations, weighted_norm2
 
 
 def _least_squares_problem(m=40, n=12, seed=0, complex_=True, norm=1.0):
@@ -370,3 +370,37 @@ def test_level_takes_precedence_over_eta():
     )
     assert info == 0
     assert ks[-1] == 3
+
+
+# --- the BLAS axpy path and its fallback ---------------------------------------
+
+
+@pytest.mark.parametrize("complex_", [True, False])
+def test_axpy_for_declines_what_blas_cannot_take(complex_):
+    """Non-contiguous or mixed-dtype arrays must get the numpy fallback, not BLAS."""
+    a = np.zeros(16, dtype=np.complex128 if complex_ else np.float64)
+    assert _axpy_for(a, a.copy()) is not None
+    assert _axpy_for(a, np.zeros(32, dtype=a.dtype)[::2]) is None
+    assert _axpy_for(a, np.zeros(16, dtype=np.float32)) is None
+
+
+@pytest.mark.parametrize("complex_", [True, False])
+def test_blas_and_fallback_iterations_agree(monkeypatch, complex_):
+    """The in-place BLAS update and the numpy expression must give the same iterates.
+
+    They differ only by floating-point reassociation, so this is a tight tolerance
+    rather than an equality: the point is that no term has been dropped or mis-signed.
+    """
+    _, _, _, N, rhs, x_ls, _ = _least_squares_problem(complex_=complex_)
+    bw2 = 1.0
+
+    def solve():
+        return cg_normal_equations(lambda v: N @ v, rhs, bw2, rtol=1e-14, maxiter=200)
+
+    x_blas, info_blas = solve()
+    monkeypatch.setattr("src.cg._axpy_for", lambda *a: None)
+    x_numpy, info_numpy = solve()
+
+    assert info_blas == info_numpy
+    assert np.allclose(x_blas, x_numpy, rtol=1e-11, atol=1e-13)
+    assert np.allclose(x_blas, x_ls, rtol=1e-8, atol=1e-10)
