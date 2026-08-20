@@ -364,3 +364,69 @@ def test_threaded_output_matches_single_threaded(tmp_path):
     a, b = np.load(one), np.load(many)
     assert a.shape == b.shape
     assert np.linalg.norm(b - a) <= 1e-12 * np.linalg.norm(a)
+
+
+# --- the default asks for threads, so it must degrade where a request would raise ---
+
+
+def _fake_two_runtimes(monkeypatch, calls):
+    """Two loaded runtimes whose setters record the count they were given."""
+    from src import _openmp
+
+    paths = ["/fake/a/libomp.dylib", "/fake/b/libomp.dylib"]
+    monkeypatch.setattr(_openmp, "runtime_paths", lambda: paths)
+    monkeypatch.setattr(
+        _openmp, "_setter", lambda path: lambda n: calls.append((path, n))
+    )
+    monkeypatch.setattr(_openmp, "_cached_generation", None)
+    monkeypatch.setattr(_openmp, "_cached_setters", [])
+    monkeypatch.setattr(_openmp, "_cached_threads", None)
+    return paths
+
+
+def test_the_default_count_degrades_to_one_on_a_multi_runtime_stack(monkeypatch):
+    """The default is ``auto``, and on a stack that cannot thread it must not raise.
+
+    A count the caller chose is honoured to the point of refusing to run, but nobody
+    chose the default, so it takes the value it would have had before rather than
+    turning a working install into an import-time failure.
+    """
+    from src import _openmp
+
+    calls = []
+    _fake_two_runtimes(monkeypatch, calls)
+    monkeypatch.setattr(_openmp, "NUM_THREADS", 8)
+    monkeypatch.setattr(_openmp, "EXPLICIT_THREADS", False)
+
+    assert _openmp.pin() == 2  # no raise
+    assert [n for _, n in calls] == [1, 1]
+
+
+def test_an_explicit_count_still_raises_on_a_multi_runtime_stack(monkeypatch):
+    """``HP2SPH_OMP_THREADS=8`` on a stack that deadlocks must still be refused."""
+    from src import _openmp
+
+    calls = []
+    paths = _fake_two_runtimes(monkeypatch, calls)
+    monkeypatch.setattr(_openmp, "NUM_THREADS", 8)
+    monkeypatch.setattr(_openmp, "EXPLICIT_THREADS", True)
+
+    with pytest.raises(_openmp.MultipleOpenMPRuntimes) as excinfo:
+        _openmp.pin()
+    for path in paths:
+        assert path in str(excinfo.value)
+    assert calls == []  # nothing is pinned before the check
+
+
+def test_bootstrap_loads_at_one_thread_whatever_the_default_is():
+    """``OMP_NUM_THREADS`` is the LOAD-time count and must stay 1.
+
+    Threads are granted afterwards by ``pin``, which can count the runtimes first.
+    Putting the real count in the environment instead would let a stack with several
+    vendored runtimes fork a worker pool per runtime as its images load, which is
+    the hang ``src/_openmp.py`` exists to prevent.
+    """
+    from src import _openmp
+
+    assert _openmp.BOOTSTRAP_THREADS == 1
+    assert os.environ["OMP_NUM_THREADS"] == "1"

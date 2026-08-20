@@ -44,15 +44,21 @@ import os
 import sys
 
 
-def _requested_threads() -> int:
-    """Read ``HP2SPH_OMP_THREADS``. ``auto`` means every core; the default is 1.
+def _requested_threads():
+    """Read ``HP2SPH_OMP_THREADS``. ``auto`` means every core, and is the DEFAULT.
+
+    Returns ``(n, explicit)``. ``explicit`` records whether the caller asked for the
+    count or merely accepted the default, which is what :func:`pin` uses to decide
+    between raising and degrading when several OpenMP runtimes are loaded.
 
     A bad value raises here, at import, rather than at the first transform. Silently
-    falling back to 1 would look like the setting worked and left no trace.
+    falling back would look like the setting worked and leave no trace.
     """
-    raw = os.environ.get("HP2SPH_OMP_THREADS", "1").strip()
+    raw = os.environ.get("HP2SPH_OMP_THREADS")
+    explicit = raw is not None
+    raw = (raw or "auto").strip()
     if raw.lower() == "auto":
-        return os.cpu_count() or 1
+        return (os.cpu_count() or 1), explicit
     try:
         n = int(raw)
     except ValueError:
@@ -61,15 +67,25 @@ def _requested_threads() -> int:
         ) from None
     if n < 1:
         raise ValueError(f"HP2SPH_OMP_THREADS={raw!r} must be >= 1")
-    return n
+    return n, explicit
 
 
-NUM_THREADS = _requested_threads()
+NUM_THREADS, EXPLICIT_THREADS = _requested_threads()
+
+# What ``_bootstrap`` puts in ``OMP_NUM_THREADS``. It is ALWAYS 1, whatever
+# ``NUM_THREADS`` is, because that variable is read when each runtime's image loads
+# and a runtime that loads with a worker pool has already claimed its state -- on a
+# stack with several vendored runtimes that is the hang this module exists to
+# prevent, and nothing in Python runs early enough to undo it. Threads are granted
+# afterwards by :func:`pin`, which only does so once the scan has proved there is a
+# single runtime to grant them to.
+BOOTSTRAP_THREADS = 1
 
 _OMP_PREFIXES = ("libomp", "libiomp5", "libgomp")
 
 _cached_generation = None
 _cached_setters = []
+_cached_threads = None
 
 
 def _is_openmp(path: str) -> bool:
@@ -212,7 +228,7 @@ def pin(num_threads: int = None) -> int:
     signal. Nothing is pinned before the check, and enumerating images touches no
     OpenMP entry point, so the raise happens before anything can go wrong.
     """
-    global _cached_generation, _cached_setters
+    global _cached_generation, _cached_setters, _cached_threads
     if _image_count is None:
         return 0
     try:
@@ -223,9 +239,18 @@ def pin(num_threads: int = None) -> int:
     if generation != _cached_generation:
         paths = runtime_paths()
         if n > 1 and len(paths) > 1:
-            _reject_threading(paths, n)
+            # Asking for threads on a multi-runtime stack is fatal. Whether that is
+            # an error or a fact of the environment depends on who asked: a count
+            # the caller set is honoured to the point of refusing to continue, while
+            # the default quietly takes the safe value it would have had before.
+            if EXPLICIT_THREADS or num_threads is not None:
+                _reject_threading(paths, n)
+            n = 1
         _cached_generation = generation
         _cached_setters = [fn for fn in map(_setter, paths) if fn is not None]
+        _cached_threads = n
+    else:
+        n = _cached_threads if num_threads is None else n
     for fn in _cached_setters:
         fn(n)
     return len(_cached_setters)

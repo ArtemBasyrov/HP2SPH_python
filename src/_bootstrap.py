@@ -22,6 +22,12 @@ pipeline segfault, and honouring it would mean honouring a value that cannot wor
 Set ``HP2SPH_OMP_THREADS`` to override, and only with a build where one OpenMP
 runtime is shared by every library.
 
+What this module sets is the LOAD-TIME count, and it is 1 whatever
+``HP2SPH_OMP_THREADS`` says. Threads are granted later by ``src/_openmp.py``'s
+``pin``, which runs after the runtimes are loaded and can therefore count them
+first. That split is what lets the default be "use the machine" without making a
+stack with several vendored runtimes hang on import.
+
 ``KMP_DUPLICATE_LIB_OK`` uses ``setdefault``, since it is a plain on/off guard
 against the ``OMP: Error #15`` abort and there is no reason to override a user who
 turned it off deliberately.
@@ -35,6 +41,6 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 # One thread per OpenMP runtime. See the module docstring: this is forced, and it
 # must happen before healpy / finufft / libfasttransforms are imported. _openmp is
 # pure stdlib, so importing it here loads nothing that links libomp.
-from ._openmp import NUM_THREADS as OMP_NUM_THREADS  # noqa: E402
+from ._openmp import BOOTSTRAP_THREADS as OMP_NUM_THREADS  # noqa: E402
 
 os.environ["OMP_NUM_THREADS"] = str(OMP_NUM_THREADS)
