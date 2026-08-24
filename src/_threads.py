@@ -8,7 +8,9 @@ chunk's writes.
 Set ``HP2SPH_NUFFT_WORKERS`` to override the thread count; 1 disables every split.
 """
 
+import ctypes
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 __all__ = [
@@ -16,6 +18,7 @@ __all__ = [
     "default_workers",
     "row_blocks",
     "run_blocks",
+    "usable_cores",
 ]
 
 _EXECUTORS = {}
@@ -34,11 +37,56 @@ def _executor(workers):
 WORKER_MIN_TRANSFORMS = 128
 
 
+def _sysctl_int(name: str) -> int:
+    """Read an integer ``sysctl`` by name, or 0 if it cannot be read."""
+    try:
+        libc = ctypes.CDLL("libc.dylib")
+        val = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(val))
+        rc = libc.sysctlbyname(
+            name.encode(),
+            ctypes.byref(val),
+            ctypes.byref(size),
+            None,
+            ctypes.c_size_t(0),
+        )
+        return int(val.value) if rc == 0 else 0
+    except Exception:
+        return 0
+
+
+def usable_cores() -> int:
+    """Cores worth putting a worker on.
+
+    NOT the logical core count. The batch split is even, so a chunk on a slow core
+    holds up the whole call: on a CPU with both performance and efficiency cores, the
+    right number of workers is the number of PERFORMANCE cores, and adding the
+    efficiency ones makes the transform slower rather than faster. macOS reports the
+    split through ``hw.perflevel0.logicalcpu``; where the platform offers an affinity
+    mask that is used instead, since it respects ``taskset`` and cgroup CPU limits that
+    ``os.cpu_count`` ignores.
+    """
+    if sys.platform == "darwin" and _sysctl_int("hw.nperflevels") > 1:
+        n = _sysctl_int("hw.perflevel0.logicalcpu")
+        if n > 0:
+            return n
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return len(os.sched_getaffinity(0))
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+_USABLE_CORES = usable_cores()
+
+
 def default_workers(n_trans: int = None) -> int:
     """How many threads a batch of ``n_trans`` independent rows should be split over.
 
-    Set ``HP2SPH_NUFFT_WORKERS`` to override; 1 disables the split. Otherwise it is the
-    core count capped at 7, above which the measured gain flattens.
+    Set ``HP2SPH_NUFFT_WORKERS`` to override; 1 disables the split. Otherwise it is
+    :func:`usable_cores`, which is the performance-core count on a heterogeneous CPU
+    and the affinity mask elsewhere.
 
     Small batches return 1: the per-call thread hand-off is fixed while the work per
     thread shrinks, so below ``WORKER_MIN_TRANSFORMS`` the split is a slowdown rather
@@ -52,7 +100,7 @@ def default_workers(n_trans: int = None) -> int:
             pass
     if n_trans is not None and n_trans < WORKER_MIN_TRANSFORMS:
         return 1
-    return max(1, min(7, os.cpu_count() or 1))
+    return max(1, _USABLE_CORES)
 
 
 def row_blocks(n_rows, workers):

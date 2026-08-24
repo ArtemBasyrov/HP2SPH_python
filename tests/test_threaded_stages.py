@@ -75,3 +75,47 @@ def test_half_dfs_still_returns_the_shifted_array(nside, healpix_map):
     ref[1 : n_rings + 1] = fft_coeff
     ref[n_rings + 1] = np.fft.fft(south, n=n_lon, norm="forward")
     assert np.array_equal(got, np.fft.fftshift(ref, axes=1))
+
+
+# --- the worker-count policy ------------------------------------------------
+
+
+def test_small_batches_are_not_split():
+    """Below the hand-off threshold the split is a slowdown, so it must not happen."""
+    from src._threads import WORKER_MIN_TRANSFORMS, default_workers
+
+    assert default_workers(WORKER_MIN_TRANSFORMS - 1) == 1
+    assert default_workers(1) == 1
+
+
+def test_the_default_is_the_usable_core_count(monkeypatch):
+    """Not the logical count, and not a hardcoded cap.
+
+    An even batch split waits on its slowest chunk, so on a CPU with performance and
+    efficiency cores the efficiency ones make the transform slower rather than faster.
+    """
+    from src import _threads
+
+    monkeypatch.delenv("HP2SPH_NUFFT_WORKERS", raising=False)
+    monkeypatch.setattr(_threads, "_USABLE_CORES", 10)
+    assert _threads.default_workers(4096) == 10
+
+
+def test_the_environment_overrides_the_policy(monkeypatch):
+    from src import _threads
+
+    monkeypatch.setenv("HP2SPH_NUFFT_WORKERS", "3")
+    assert _threads.default_workers(4096) == 3
+    assert _threads.default_workers(1) == 3  # an explicit count skips the small gate
+    monkeypatch.setenv("HP2SPH_NUFFT_WORKERS", "not-a-number")
+    assert _threads.default_workers(4096) == _threads._USABLE_CORES
+
+
+def test_usable_cores_is_sane():
+    """It has to be a real count, and never more than the logical cores present."""
+    import os
+
+    from src._threads import usable_cores
+
+    n = usable_cores()
+    assert 1 <= n <= (os.cpu_count() or 1)
