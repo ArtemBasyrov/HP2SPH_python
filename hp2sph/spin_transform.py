@@ -1,7 +1,7 @@
 """Spin-2 (polarization Q/U <-> E/B) transforms.
 
 This wires the spin stages into an end-to-end ``forward_spin`` / ``backward_spin``
-and follows SPIN2_PLAN.md. Both directions are native (no resampling) by default;
+Both directions are native (no resampling) by default;
 ``backward_spin(..., synthesis="hp2sph")`` reproduces ``hp.alm2map_spin`` to machine
 precision. Two routes exist for each direction:
 
@@ -73,7 +73,6 @@ from .data_interpolation import transform_healpix_to_grid, transform_grid_to_hea
 from .double_fourier_sphere import (
     DFS,
     DFS_inverse,
-    dfs_fold_plan,
     dfs_fold_sparse,
     pole_stencil_rows,
 )

@@ -53,7 +53,7 @@ def _mirror_map(mp: np.ndarray, spin: int) -> np.ndarray:
         so the bug was invisible -- every other mode vanishes at the pole either way;
       * spin +-2: that is m = -+2, whose pole value is NOT zero, so the reversed
         longitude injected a wrong pole ring and spread a single harmonic over all l of
-        the same parity. This was the "m != 0 is broken" symptom (SPIN2_PLAN.md Phase 3).
+        the same parity. This was the "m != 0 is broken" symptom (the spin-2 m != 0 regression).
     """
     n_lon = mp.shape[1]
     mirrored = np.roll(np.flip(mp, axis=0), n_lon // 2, axis=1)

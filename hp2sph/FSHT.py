@@ -1,7 +1,7 @@
 import numpy as np
 
 # The FSHT stage runs in-process through the libfasttransforms C library (see
-# src/ft_sphere.py for how the library is located -- no env var needed when it is
+# hp2sph/ft_sphere.py for how the library is located -- no env var needed when it is
 # installed normally). If it cannot be loaded, the import below raises ImportError
 # with a build/install hint; there is no other backend.
 from .ft_sphere import fourier2sph as _ft_fourier2sph

@@ -77,7 +77,7 @@ def compute_voronoi_weights_1d(x, period=2 * np.pi):
     was already exactly ``2*pi`` -- the old code conserved the measure and misallocated
     it. The starved row is the Lagrange pole fill, which carries the m=0 high-l
     accuracy, and the asymmetry also blocked exploiting the DFS mirror symmetry to
-    halve the solve (see fix_pass_2.md item 1).
+    halve the solve .
     """
     x = np.asarray(x, dtype=float)
     if x.ndim != 1 or x.size < 2:
@@ -103,7 +103,7 @@ def _default_N_modes(M_samples):
     # interpolates the samples (the extra mode sits in the null space). NOTE the
     # FSHT `preparation` is calibrated for L = (N_modes-1)//2 = 4*nside, i.e. this
     # exact count -- it does NOT work at other latitude band limits, so changing
-    # N_modes also requires reworking preparation. See module docstring / CLAUDE.md.
+    # N_modes also requires reworking preparation. See the module docstring.
     return M_samples + (M_samples % 2 == 0)
 
 
@@ -159,7 +159,6 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
 
     Returns (f_hat of shape (N_modes, n_trans), info=0) to match ``cg_nufft_forward``.
     """
-    n_trans = f_samples.shape[0]
     M_samples = f_samples.shape[1]
     if N_modes is None:
         N_modes = _default_N_modes(M_samples)
@@ -174,7 +173,7 @@ def svd_nufft_forward(x, f_samples, N_modes=None, rcond=1e-13):
     return f_hat, 0
 
 
-# The thread-pool policy is shared with the numpy stages; see src/_threads.py. The
+# The thread-pool policy is shared with the numpy stages; see hp2sph/_threads.py. The
 # measured crossover for THIS batch (spin forward, alternating A/B) is 0.31x at 32
 # transforms, 0.72x at 64, 1.24x at 128, 1.63x at 256, which is where
 # WORKER_MIN_TRANSFORMS = 128 comes from.
@@ -656,19 +655,21 @@ def lsmr_nufft_forward(
 ):
     """Latitude analysis via LSMR on the least-squares problem itself.
 
-    Solves ``min || sqrt(W) (A f_hat - samples) ||`` directly, rather than forming the
-    normal equations. Two reasons this is the solver to use with a ``sample_mask``:
+    Solves ``min || sqrt(W) (A f_hat - samples) ||`` directly, rather than forming
+    the normal equations. Reach for it when the system may be RANK-DEFICIENT: started
+    from zero, LSMR converges to the MINIMUM-NORM least-squares solution, which is
+    the right answer for a mode the grid never sampled -- it invents no content in
+    the null space, whereas CG on the normal equations drifts into it. LSMR also
+    works with ``cond(A)`` rather than ``cond(A)^2``.
 
-    * With entries masked out, the high-``|m|`` columns keep samples only in the
-      equatorial belt and the problem becomes RANK-DEFICIENT. Started from zero, LSMR
-      converges to the MINIMUM-NORM least-squares solution, which is exactly the right
-      answer for "this mode was never sampled here" -- do not invent content in the
-      null space. CG on the normal equations has no such property and drifts into the
-      null space instead.
-    * LSMR works with ``cond(A)``, not ``cond(A)^2``.
+    No route in :func:`apply_nuFFT` selects it by default. The pipeline's masked
+    solves are paired with a fold plan that restores full rank, so they use CG, which
+    is faster; this solver is for callers who build a rank-deficient system of their
+    own, or who want a ``cond(A)`` method for a badly conditioned band.
 
-    Cost per iteration is one forward + one adjoint NUFFT, the same as a CG iteration.
-    Returns ``(f_hat of shape (N_modes, n_trans), info)`` like ``cg_nufft_forward``.
+    Cost per iteration is one forward + one adjoint NUFFT, the same as a CG
+    iteration. Returns ``(f_hat of shape (N_modes, n_trans), info)`` like
+    :func:`cg_nufft_forward`.
     """
     n_trans = f_samples.shape[0]
     M_samples = f_samples.shape[1]
@@ -1058,7 +1059,7 @@ def apply_nuFFT(
     is the ratio ``rtol`` tests, and ``get_spectrum()`` returns the current iterate in
     the same layout as the return value.
     """
-    _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
+    _openmp.pin()  # finufft's OpenMP runtime is one of several; see hp2sph/_openmp.py
     nside = mp.shape[1] // 4
     if half_domain and mp.shape[0] != 4 * nside + 1:
         raise ValueError(
@@ -1144,7 +1145,7 @@ def inverse_nuFFT(fft_lat: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     Returns:
     - np.ndarray: Reconstructed signal at non-uniform latitude samples.
     """
-    _openmp.pin()  # finufft's OpenMP runtime is one of several; see src/_openmp.py
+    _openmp.pin()  # finufft's OpenMP runtime is one of several; see hp2sph/_openmp.py
     nside = fft_lat.shape[1] // 4
     DFT_upsampled_lat = _upsampled_latitudes(nside)
 

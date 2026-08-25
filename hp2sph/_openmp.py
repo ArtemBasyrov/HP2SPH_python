@@ -21,7 +21,7 @@ the crash or the hang.
 What makes it work is one thread per runtime, so none of them forks a worker pool.
 That is what the ``OMP_NUM_THREADS=1`` prefix in the old docs was buying.
 
-``src/_bootstrap.py`` sets that variable itself, which covers everything the
+``hp2sph/_bootstrap.py`` sets that variable itself, which covers everything the
 pipeline imports. It cannot cover a library that loaded BEFORE ``src`` did, because
 libomp reads its thread count when the image loads. :func:`pin` closes that gap
 from inside the process: it walks the loaded shared libraries, picks out the OpenMP
@@ -160,7 +160,7 @@ def loaded_images():
 
     Returns ``(0, [])`` where the platform has no probe. Callers treat that as
     "nothing to pin" and fall back on the ``OMP_NUM_THREADS`` value that
-    ``src/_bootstrap.py`` sets.
+    ``hp2sph/_bootstrap.py`` sets.
     """
     if _image_names is None:
         return 0, []

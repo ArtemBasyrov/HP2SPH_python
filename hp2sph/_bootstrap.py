@@ -7,12 +7,12 @@ the old docs demanded is gone, because this module sets it itself.
 Three of the dependencies each vendor their own copy of the LLVM OpenMP runtime
 (healpy, finufft, and libfasttransforms via Homebrew's libomp), and all three end
 up loaded at once. Two of them running worker pools in one process crashes or
-hangs; ``src/_openmp.py`` documents the exact failures. One thread per runtime is
+hangs; ``hp2sph/_openmp.py`` documents the exact failures. One thread per runtime is
 therefore a CORRECTNESS requirement here, not a tuning choice.
 
 Both variables below are set before the first ``import`` of anything that links
 libomp, because libomp reads its thread count when the image loads. That is also
-why ``src/_openmp.py``'s in-process pin cannot replace this: by the time any Python
+why ``hp2sph/_openmp.py``'s in-process pin cannot replace this: by the time any Python
 code could call ``omp_set_num_threads``, a runtime that loaded with 8 threads has
 already claimed its state.
 
@@ -23,7 +23,7 @@ Set ``HP2SPH_OMP_THREADS`` to override, and only with a build where one OpenMP
 runtime is shared by every library.
 
 What this module sets is the LOAD-TIME count, and it is 1 whatever
-``HP2SPH_OMP_THREADS`` says. Threads are granted later by ``src/_openmp.py``'s
+``HP2SPH_OMP_THREADS`` says. Threads are granted later by ``hp2sph/_openmp.py``'s
 ``pin``, which runs after the runtimes are loaded and can therefore count them
 first. That split is what lets the default be "use the machine" without making a
 stack with several vendored runtimes hang on import.

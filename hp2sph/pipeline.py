@@ -33,6 +33,11 @@ __all__ = ["forward_C", "forward_alm", "backward_map", "nside_from_C"]
 # 1e-12 -- it is a plain evaluation whose eps sets the output accuracy directly.
 ANALYSIS_EPS = 1e-6
 
+# NUFFT tolerance for the latitude SYNTHESIS. Unlike the analysis this is a plain
+# evaluation, so eps sets the output accuracy directly, scaled by the size of the
+# coefficient vector being evaluated. See backward_map's ``eps`` argument.
+SYNTHESIS_EPS = 1e-12
+
 
 def forward_C(healpix_map, **nufft_kw):
     """HEALPix intensity map -> raw FastTransforms coefficient array ``C``.
@@ -97,15 +102,23 @@ def nside_from_C(C):
     return (np.shape(C)[0] - 1) // 2
 
 
-def backward_map(C, nside=None):
+def backward_map(C, nside=None, eps=SYNTHESIS_EPS):
     """Raw ``C`` array -> HEALPix intensity map (inverse pipeline).
 
     ``nside`` defaults to :func:`nside_from_C`, which is right for the compact
     band; pass it explicitly for a ``C`` solved in a wider band.
+
+    ``eps`` is the latitude NUFFT tolerance for the synthesis. Synthesis is a plain
+    evaluation, so its error enters the output multiplied by the norm of the
+    coefficient vector: in the well-conditioned compact band that norm is O(1) and
+    the default is far tighter than needed, but a wide, ill-conditioned band
+    produces coefficients orders of magnitude larger than the map and needs a
+    correspondingly tighter ``eps`` to invert. Values below ~1e-13 are refused by
+    finufft at the default upsampling factor.
     """
     if nside is None:
         nside = nside_from_C(C)
     _, C2 = inverse_FSHT(C, nside)
-    fft_lat = inverse_nuFFT(C2)
+    fft_lat = inverse_nuFFT(C2, eps=eps)
     fft_coeff = DFS_inverse(fft_lat)
     return transform_grid_to_healpix(fft_coeff, fft_coeff)

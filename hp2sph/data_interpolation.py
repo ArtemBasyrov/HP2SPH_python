@@ -356,7 +356,6 @@ def transform_grid_to_healpix(
 
     # get general info
     nside = fft_coeff.shape[1] // 4
-    n_rings = 4 * nside - 1
     ring_info = get_ring_indices(nside)  # [start_id, end_id, ring_id]
 
     ring_sizes = ring_pixel_counts(nside)

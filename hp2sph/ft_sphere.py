@@ -119,7 +119,7 @@ def _preload_finufft():
 
     libfasttransforms links one OpenMP runtime (Homebrew's libomp in this checkout)
     and the finufft wheel vendors another under ``finufft/.dylibs/`` -- see
-    ``src/_openmp.py`` for the full picture. Whichever initializes first claims the
+    ``hp2sph/_openmp.py`` for the full picture. Whichever initializes first claims the
     process-wide runtime state, and the two orders are NOT symmetric. Measured on
     macOS 24.6 / arm64, no OpenMP env vars set:
 
@@ -129,9 +129,9 @@ def _preload_finufft():
     ``KMP_DUPLICATE_LIB_OK`` does not help. It only suppresses the ``OMP: Error #15``
     message, which is a different symptom from the crash.
 
-    Importing here rather than in ``src/__init__.py`` puts the guard in the module
-    that actually loads the offending library, so ``import src.FSHT`` and
-    ``import src.ft_sphere`` are protected too, not just ``import src``.
+    Importing here rather than in ``hp2sph/__init__.py`` puts the guard in the module
+    that actually loads the offending library, so ``import hp2sph.FSHT`` and
+    ``import hp2sph.ft_sphere`` are protected too, not just ``import hp2sph``.
 
     Failure is tolerated: finufft is a pipeline dependency, not an FSHT one, so a
     caller who only wants ``fourier2sph`` should not be blocked by its absence.
@@ -149,7 +149,7 @@ _lib = _load_library()
 def _pin_threads():
     """Pin every loaded OpenMP runtime before entering libfasttransforms.
 
-    See ``src/_openmp.py`` for why this is a correctness requirement and not a
+    See ``hp2sph/_openmp.py`` for why this is a correctness requirement and not a
     tuning knob: three vendored copies of libomp are loaded at once, and unless each
     is held to one thread the process crashes or hangs. Called per execute rather
     than once at import because ``omp_set_num_threads`` sets the CALLING thread's
@@ -197,7 +197,7 @@ if _HAVE_SPIN:
 # function VALUES on the equiangular grid (theta_n = (2n+1)*pi/(2N), phi_m =
 # 2*pi*m/M) and the bivariate Fourier coefficients that fourier2spinsph consumes --
 # the library's own counterpart to HP2SPH's stages 1-3. They are the documented
-# fallback for the spin path (SPIN2_PLAN.md): bypass the hand-rolled DFS by
+# fallback for the spin path: bypass the hand-rolled DFS by
 # resampling onto this grid. Only bound when the entry points exist.
 _HAVE_SPIN_FFTW = _HAVE_SPIN and hasattr(_lib, "ft_plan_spinsph_analysis")
 _FFTW_ESTIMATE = 1 << 6  # do not clobber the input array while planning
