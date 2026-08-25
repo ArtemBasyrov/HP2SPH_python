@@ -164,12 +164,16 @@ def to_healpy_alm(
     def idx(l, m):
         return m * (2 * lmax + 1 - m) // 2 + l  # healpy Alm.getidx
 
+    # healpy orders alm by m, so at fixed m the destination is contiguous in l and
+    # the source is a contiguous slice of column 2m-1: one assignment per order.
+    sign_l = np.where(np.arange(lmax + 1) % 2, -1.0, 1.0)  # (-1)^l
+
+    alm[: lmax + 1] = sign_l * C[: lmax + 1, 0].real / scale
     alm[idx(0, 0)] = C[0, 0].real / (scale * mono_factor)
-    for l in range(1, lmax + 1):
-        sign = (-1.0) ** l
-        alm[idx(l, 0)] = sign * C[l, 0].real / scale
-        for m in range(1, l + 1):
-            alm[idx(l, m)] = sign * C[l - m, 2 * m - 1] / (np.sqrt(2.0) * scale)
+    for m in range(1, lmax + 1):
+        n = lmax + 1 - m
+        start = idx(m, m)
+        alm[start : start + n] = sign_l[m:] * C[:n, 2 * m - 1] / (np.sqrt(2.0) * scale)
 
     return alm
 
@@ -217,14 +221,16 @@ def from_healpy_alm(
         return m * (2 * lmax + 1 - m) // 2 + l  # healpy Alm.getidx
 
     top = min(lmax, L)
+    sign_l = np.where(np.arange(top + 1) % 2, -1.0, 1.0)  # (-1)^l
+
+    C[: top + 1, 0] = sign_l * alm[idx(0, 0) : idx(top, 0) + 1].real * scale
     C[0, 0] = alm[idx(0, 0)].real * scale * mono_factor
-    for l in range(1, top + 1):
-        sign = (-1.0) ** l
-        C[l, 0] = sign * alm[idx(l, 0)].real * scale
-        for m in range(1, l + 1):
-            v = sign * alm[idx(l, m)] * np.sqrt(2.0) * scale
-            C[l - m, 2 * m - 1] = v
-            C[l - m, 2 * m] = np.conj(v)
+    for m in range(1, top + 1):
+        n = top + 1 - m
+        start = idx(m, m)
+        v = sign_l[m:] * alm[start : start + n] * np.sqrt(2.0) * scale
+        C[:n, 2 * m - 1] = v
+        C[:n, 2 * m] = np.conj(v)
 
     return C
 
@@ -474,18 +480,24 @@ def spin_alm_from_F(
 
     s0 = abs(spin)
     sqrt2 = np.sqrt(2.0) if real_sh_norm else 1.0  # library F is already complex-SH
+    # ``(-1)^l`` undoes the DFS colatitude-origin phase, exactly as the scalar
+    # ``to_healpy_alm``. The library's half-sample equiangular grid has no such
+    # phase, so callers feeding a raw library ``F`` pass ``colat_phase=False``.
+    sign_l = (
+        np.where(np.arange(lmax + 1) % 2, -1.0, 1.0)
+        if colat_phase
+        else np.ones(lmax + 1)
+    )
     for m in range(0, lmax + 1):
         col = _spin_F_col(m)
         norm = scale if m == 0 else scale * sqrt2
         phase_m = _spin_conv_phase(m, spin)  # healpy<->FT spin longitude phase
-        for l in range(max(m, s0), lmax + 1):
-            row = l - max(m, s0)
-            # ``(-1)^l`` undoes the DFS colatitude-origin phase, exactly as the
-            # scalar ``to_healpy_alm``. The library's half-sample equiangular grid
-            # has no such phase, so callers feeding a raw library ``F`` pass
-            # ``colat_phase=False``.
-            sign = phase_m * ((-1.0) ** l if colat_phase else 1.0)
-            alm[idx(l, m)] = sign * F[row, col] / norm
+        lo = max(m, s0)  # degrees below |spin| carry no coefficient and stay zero
+        if lo > lmax:
+            continue
+        n = lmax + 1 - lo
+        start = idx(lo, m)
+        alm[start : start + n] = (phase_m * sign_l[lo:]) * F[:n, col] / norm
     return alm
 
 
@@ -523,16 +535,23 @@ def spin_alm_from_conjugate_F(
 
     s0 = abs(spin)
     sqrt2 = np.sqrt(2.0) if real_sh_norm else 1.0
+    sign_l = (
+        np.where(np.arange(lmax + 1) % 2, -1.0, 1.0)
+        if colat_phase
+        else np.ones(lmax + 1)
+    )
     for m in range(0, lmax + 1):
         col = _spin_F_col(-m)  # the coefficient at order -m of the SUPPLIED spin
         norm = scale if m == 0 else scale * sqrt2
         # (-1)^m from the conjugation identity; the rest is spin_alm_from_F at -m.
         phase_m = ((-1.0) ** m) * _spin_conv_phase(-m, spin)
-        for l in range(max(m, s0), lmax + 1):
-            row = l - max(m, s0)  # |-m| = m, so the row layout is unchanged
-            sign = phase_m * ((-1.0) ** l if colat_phase else 1.0)
-            # sign and norm are real, so conjugating only F is the same thing.
-            alm[idx(l, m)] = sign * np.conj(F[row, col]) / norm
+        lo = max(m, s0)  # |-m| = m, so the row layout is unchanged
+        if lo > lmax:
+            continue
+        n = lmax + 1 - lo
+        start = idx(lo, m)
+        # sign and norm are real, so conjugating only F is the same thing.
+        alm[start : start + n] = (phase_m * sign_l[lo:]) * np.conj(F[:n, col]) / norm
     return alm
 
 
