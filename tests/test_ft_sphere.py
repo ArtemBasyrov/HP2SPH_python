@@ -1,6 +1,6 @@
 """Backend self-consistency for the in-process libfasttransforms FSHT stage.
 
-``src/ft_sphere.py`` runs the FSHT stage through a direct ctypes call into
+``hp2sph/ft_sphere.py`` runs the FSHT stage through a direct ctypes call into
 ``libfasttransforms``. This checks the forward/inverse C transforms round-trip --
 a pure backend check, independent of the alm conventions downstream.
 
@@ -12,16 +12,16 @@ import importlib
 import numpy as np
 import pytest
 
-from src.data_interpolation import transform_healpix_to_grid
-from src.double_fourier_sphere import DFS
-from src.nuFFT import apply_nuFFT
+from hp2sph.data_interpolation import transform_healpix_to_grid
+from hp2sph.double_fourier_sphere import DFS
+from hp2sph.nuFFT import apply_nuFFT
 
 # ``src`` re-exports the ``FSHT`` function, shadowing the submodule attribute, so
 # import the module object explicitly.
-FSHT = importlib.import_module("src.FSHT")
+FSHT = importlib.import_module("hp2sph.FSHT")
 
 # Skip the whole module if the C library can't be loaded.
-ft_sphere = pytest.importorskip("src.ft_sphere")
+ft_sphere = pytest.importorskip("hp2sph.ft_sphere")
 
 
 def _build_g(healpix_map):

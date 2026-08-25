@@ -5,9 +5,9 @@ import healpy as hp
 import pytest
 
 # The pipeline helpers load the C library on import; skip cleanly if it is missing.
-pytest.importorskip("src.ft_sphere")
+pytest.importorskip("hp2sph.ft_sphere")
 
-from src.FSHT import from_healpy_alm  # noqa: E402
+from hp2sph.FSHT import from_healpy_alm  # noqa: E402
 from tests.pipeline_helpers import (  # noqa: E402
     forward_C,
     forward_alm,
@@ -149,32 +149,32 @@ def test_forward_alm_converges_with_nside(relerr):
 
 
 # --------------------------------------------------------------------------- #
-# main.py's public entry points                                                #
+# The CLI wrappers (hp2sph/cli.py)                                             #
 # --------------------------------------------------------------------------- #
-# ``main.forward`` used to demand a 3-row (I, Q, U) stack and transform only I,
-# which is why the benchmarks bypassed it and imported the composition out of
-# ``tests/`` instead. It now takes a single map and delegates to ``src.pipeline``.
+# The CLI wrappers must stay a thin shell over ``hp2sph.pipeline``: they add FITS
+# I/O and argument handling and nothing else. A 2-D input is rejected outright --
+# an earlier signature took a 3-row (I, Q, U) stack and silently transformed only I.
 @pytest.mark.ft
-def test_main_forward_is_the_pipeline_composition(nside, healpix_map, relerr):
-    import main
+def test_cli_forward_is_the_pipeline_composition(nside, healpix_map, relerr):
+    from hp2sph import cli
 
-    assert relerr(main.forward(healpix_map), forward_C(healpix_map)) == 0.0
+    assert relerr(cli.forward(healpix_map), forward_C(healpix_map)) == 0.0
 
 
 @pytest.mark.ft
-def test_main_roundtrip_matches_the_pipeline(nside, healpix_map, relerr):
-    import main
+def test_cli_roundtrip_matches_the_pipeline(nside, healpix_map, relerr):
+    from hp2sph import cli
 
-    C = main.forward(healpix_map)
-    assert relerr(main.backward(C), backward_map(C, nside)) == 0.0
+    C = cli.forward(healpix_map)
+    assert relerr(cli.backward(C), backward_map(C, nside)) == 0.0
 
 
-def test_main_forward_rejects_an_iqu_stack():
-    """The old signature silently ignored Q and U; the new one must not accept it."""
-    import main
+def test_cli_forward_rejects_an_iqu_stack():
+    """A 2-D (I, Q, U) stack must be refused, not silently reduced to its first row."""
+    from hp2sph import cli
 
     with pytest.raises(ValueError, match="single HEALPix map"):
-        main.forward(np.zeros((3, 12 * 4**2)))
+        cli.forward(np.zeros((3, 12 * 4**2)))
 
 
 @pytest.mark.ft
@@ -186,11 +186,11 @@ def test_forward_C_half_domain_route_is_bit_identical(healpix_map):
     this is a pure restructuring: the outputs must be equal bit for bit, not merely
     close.
     """
-    from src.data_interpolation import transform_healpix_to_grid
-    from src.double_fourier_sphere import DFS
-    from src.nuFFT import apply_nuFFT
-    from src.FSHT import FSHT
-    from src.pipeline import ANALYSIS_EPS
+    from hp2sph.data_interpolation import transform_healpix_to_grid
+    from hp2sph.double_fourier_sphere import DFS
+    from hp2sph.nuFFT import apply_nuFFT
+    from hp2sph.FSHT import FSHT
+    from hp2sph.pipeline import ANALYSIS_EPS
 
     upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
     _, dfs = DFS(upsampled, fft_coeff)
@@ -206,10 +206,10 @@ def test_forward_C_keeps_the_full_domain_for_the_square_band(nside, healpix_map)
     Only the CG path understands the half layout, so a route selection that fed it a
     half-height array would be silently wrong rather than raising.
     """
-    from src.data_interpolation import transform_healpix_to_grid
-    from src.double_fourier_sphere import DFS
-    from src.nuFFT import apply_nuFFT
-    from src.FSHT import FSHT
+    from hp2sph.data_interpolation import transform_healpix_to_grid
+    from hp2sph.double_fourier_sphere import DFS
+    from hp2sph.nuFFT import apply_nuFFT
+    from hp2sph.FSHT import FSHT
 
     kw = dict(solver="svd", solve_modes=8 * nside + 1)
     upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)

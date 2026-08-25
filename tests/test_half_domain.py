@@ -8,9 +8,9 @@ implementation, not a tolerance on physics.
 import numpy as np
 import pytest
 
-from src.data_interpolation import transform_healpix_to_grid
-from src.double_fourier_sphere import DFS, dfs_fold_plan
-from src.nuFFT import (
+from hp2sph.data_interpolation import transform_healpix_to_grid
+from hp2sph.double_fourier_sphere import DFS, dfs_fold_plan
+from hp2sph.nuFFT import (
     _fold_ops,
     _is_mirror_symmetric,
     _mirror_plan,
@@ -271,7 +271,7 @@ def test_map_rows_returns_exactly_the_pole_stencil_slices(nside):
     ``pole_stencil_rows(nside)`` rings from each end. Transforming just those is
     bit-identical to slicing the full inverse FFT, so this is a pure saving.
     """
-    from src.double_fourier_sphere import pole_stencil_rows
+    from hp2sph.double_fourier_sphere import pole_stencil_rows
 
     rng = np.random.default_rng(0)
     npix = 12 * nside * nside
@@ -291,7 +291,7 @@ def test_map_rows_returns_exactly_the_pole_stencil_slices(nside):
 @pytest.mark.parametrize("spin", [0, 2])
 def test_dfs_half_accepts_the_short_map(nside, spin):
     """``DFS(half=True)`` must give the same answer from the short map as the full one."""
-    from src.double_fourier_sphere import pole_stencil_rows
+    from hp2sph.double_fourier_sphere import pole_stencil_rows
 
     rng = np.random.default_rng(0)
     npix = 12 * nside * nside
@@ -305,7 +305,7 @@ def test_dfs_half_accepts_the_short_map(nside, spin):
 
 
 def test_pole_stencils_rejects_too_few_rows(nside):
-    from src.double_fourier_sphere import _pole_stencils, pole_stencil_rows
+    from hp2sph.double_fourier_sphere import _pole_stencils, pole_stencil_rows
 
     k = pole_stencil_rows(nside)
     too_short = np.zeros((2 * k - 1, 4 * nside))
@@ -325,7 +325,7 @@ def test_sparse_plan_matches_the_indices_derived_from_the_dense_one(nside, spin)
     equation is dropped while its content is still folded on; the only extra drops are
     the pole slots a relaxed mode can have corrupted.
     """
-    from src.double_fourier_sphere import dfs_fold_sparse
+    from hp2sph.double_fourier_sphere import dfs_fold_sparse
 
     target, phase, keep = dfs_fold_plan(nside, spin, 1e-2, half=True)
     n_rows, n_trans = target.shape
@@ -350,7 +350,7 @@ def test_sparse_plan_matches_the_indices_derived_from_the_dense_one(nside, spin)
 
 
 def test_sparse_plan_gives_the_identical_solve(nside):
-    from src.double_fourier_sphere import dfs_fold_sparse
+    from hp2sph.double_fourier_sphere import dfs_fold_sparse
 
     rng = np.random.default_rng(0)
     npix = 12 * nside * nside
@@ -365,7 +365,7 @@ def test_sparse_plan_gives_the_identical_solve(nside):
 
 
 def test_sparse_plan_rejects_a_redundant_sample_mask(nside):
-    from src.double_fourier_sphere import dfs_fold_sparse
+    from hp2sph.double_fourier_sphere import dfs_fold_sparse
 
     rng = np.random.default_rng(0)
     npix = 12 * nside * nside

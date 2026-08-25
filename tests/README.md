@@ -2,7 +2,7 @@
 
 Per-stage and end-to-end tests for the HEALPix <-> alm pipeline, scalar and spin-2.
 The tests are designed to **encode correct behaviour and surface failure modes**,
-not to be made green by loosening tolerances. The whole suite passes (243 tests).
+not to be made green by loosening tolerances. The whole suite passes (415 tests).
 
 ## Running
 
@@ -14,11 +14,11 @@ python -m pytest
 ```
 
 - **No environment-variable prefix is needed, including `OMP_NUM_THREADS=1`.**
-  `src/_bootstrap.py` sets the OpenMP guards on import, and `conftest.py` repeats
+  `hp2sph/_bootstrap.py` sets the OpenMP guards on import, and `conftest.py` repeats
   them because it imports healpy before any `src` code runs.
 - Do not set `OMP_NUM_THREADS` yourself. Three dependencies each vendor their own
   copy of libomp, and more than one of them threaded makes the process crash or
-  hang; `src/_openmp.py` explains the failure modes and `tests/test_openmp_guard.py`
+  hang; `hp2sph/_openmp.py` explains the failure modes and `tests/test_openmp_guard.py`
   pins them. `HP2SPH_OMP_THREADS` is the override, and it reproduces the failures.
 
 Skip the tests that need the `libfasttransforms` C library:
@@ -46,7 +46,7 @@ it cannot be loaded.
 | `test_paper_accuracy.py` | all | paper-style known-alm per-`l` error + convergence vs `nside`, compared to healpy |
 | `test_conditioning.py` | 3 | latitude Vandermonde conditioning per band (the accuracy/invertibility trade-off) |
 
-Spin-2 (polarization) — `SPIN2_PLAN.md` phases 1 to 5:
+Spin-2 (polarization):
 
 | file | stage | what it checks |
 |------|-------|----------------|
@@ -60,7 +60,7 @@ Spin-2 (polarization) — `SPIN2_PLAN.md` phases 1 to 5:
 Fixtures (`conftest.py`) parametrise over `nside in {4, 8, 16}` and provide a
 random band-limited `random_alm`, the synthesised `healpix_map`, and a `relerr`
 helper. `pipeline_helpers.py` wires the four stages into `forward_C` /
-`forward_alm` / `backward_map` without the FITS I/O that `main.py` does.
+`forward_alm` / `backward_map` without the FITS I/O that `hp2sph/cli.py` does.
 
 ## Status
 

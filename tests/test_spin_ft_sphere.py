@@ -1,17 +1,15 @@
 """Phase 1: the in-process spin-weighted FastTransforms backend.
 
-``src/ft_sphere.py`` gains ``fourier2spinsph`` / ``spinsph2fourier`` wrapping the
+``hp2sph/ft_sphere.py`` gains ``fourier2spinsph`` / ``spinsph2fourier`` wrapping the
 C library's ``ft_plan_spinsph2fourier(n, s)`` + spin execute routines (genuinely
 complex, interleaved ft_complex buffers). These tests are self-contained: a pure
 backend round trip plus a spin-0 == scalar sanity check. No Julia, no healpy.
-
-See SPIN2_PLAN.md (Phase 1).
 """
 
 import numpy as np
 import pytest
 
-ft_sphere = pytest.importorskip("src.ft_sphere")
+ft_sphere = pytest.importorskip("hp2sph.ft_sphere")
 
 if not getattr(ft_sphere, "_HAVE_SPIN", False):
     pytest.skip("libfasttransforms has no spin entry points", allow_module_level=True)

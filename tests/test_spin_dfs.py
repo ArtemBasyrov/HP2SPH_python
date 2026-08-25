@@ -6,16 +6,14 @@ mirror across the pole is multiplied by ``(-1)^(m+s)`` (the scalar ``s=0`` case 
 content. For the even spins the polarization pipeline needs (``s = +-2``) the
 mirror parity is the same columns as scalar, so the spin DFS reduces to a
 complex-safe version of the scalar DFS; these tests pin that.
-
-See SPIN2_PLAN.md (Phase 3).
 """
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from src.data_interpolation import transform_healpix_to_grid
-from src.double_fourier_sphere import DFS, DFS_inverse, _mirror_odd_mask
+from hp2sph.data_interpolation import transform_healpix_to_grid
+from hp2sph.double_fourier_sphere import DFS, DFS_inverse, _mirror_odd_mask
 
 
 def _complex_field(nside, seed=0):
@@ -61,7 +59,7 @@ def test_mirror_map_is_a_phi_shift(nside):
     ROLL by half the longitude samples. The old code used ``jnp.flip(mp)`` with no
     axis, reversing both axes and so applying ``phi -> -phi``.
     """
-    from src.double_fourier_sphere import _mirror_map
+    from hp2sph.double_fourier_sphere import _mirror_map
 
     z = _complex_field(nside, seed=11)
     up, _ = transform_healpix_to_grid(z)

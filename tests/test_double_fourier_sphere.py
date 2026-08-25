@@ -3,8 +3,8 @@
 import healpy as hp
 import numpy as np
 
-from src.data_interpolation import transform_healpix_to_grid, create_latitude_array
-from src.double_fourier_sphere import (
+from hp2sph.data_interpolation import transform_healpix_to_grid, create_latitude_array
+from hp2sph.double_fourier_sphere import (
     DFS,
     DFS_inverse,
     compute_ring_area_weights,

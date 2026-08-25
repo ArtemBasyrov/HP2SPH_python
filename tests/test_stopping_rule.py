@@ -22,9 +22,9 @@ import healpy as hp
 import numpy as np
 import pytest
 
-from src.data_interpolation import transform_healpix_to_grid
-from src.double_fourier_sphere import DFS, dfs_fold_plan
-from src.spin_transform import ALIAS_ETA, forward_spin
+from hp2sph.data_interpolation import transform_healpix_to_grid
+from hp2sph.double_fourier_sphere import DFS, dfs_fold_plan
+from hp2sph.spin_transform import ALIAS_ETA, forward_spin
 
 
 def _spin_sky(nside, seed=0, pure_E=False):
@@ -91,7 +91,7 @@ def test_stagnation_stop_cuts_the_iteration_count_without_moving_the_answer(nsid
 
 def test_stagnation_stop_is_inert_on_the_unfolded_scalar_solve():
     """Without the fold the system is well posed, so the rule must not stop it early."""
-    from src.nuFFT import apply_nuFFT
+    from hp2sph.nuFFT import apply_nuFFT
 
     nside, lmax = 32, 64
     ell = np.arange(lmax + 1)
@@ -115,7 +115,7 @@ def _dfs_of(Q, U, spin=2):
 
 def _residual_floor(Q, U, lmax, nside, alias_tol=1e-2):
     """The converged data residual, in absolute (un-normalised) units."""
-    from src.nuFFT import compute_voronoi_weights_1d, _upsampled_latitudes
+    from hp2sph.nuFFT import compute_voronoi_weights_1d, _upsampled_latitudes
 
     dfs = _dfs_of(Q, U)
     _, _, keep = dfs_fold_plan(nside, 2, alias_tol)
@@ -141,7 +141,7 @@ def _residual_floor(Q, U, lmax, nside, alias_tol=1e-2):
 @pytest.mark.parametrize("nside", [16, 32])
 def test_nyquist_discrepancy_predicts_the_residual_floor(nside):
     """The a-priori level must match the floor it is meant to estimate."""
-    from src.nuFFT import nyquist_discrepancy
+    from hp2sph.nuFFT import nyquist_discrepancy
 
     aE, _, Q, U, lmax = _spin_sky(nside)
     got = nyquist_discrepancy(_dfs_of(Q, U))
@@ -154,7 +154,7 @@ def test_nyquist_discrepancy_is_blind_to_a_sky_without_grid_nyquist_power():
 
     This is why the level cannot be the only stopping rule -- it silently never fires.
     """
-    from src.nuFFT import nyquist_discrepancy
+    from hp2sph.nuFFT import nyquist_discrepancy
 
     nside = 32
     slmax = 2 * nside - 1  # one below the grid Nyquist
@@ -229,7 +229,7 @@ def test_the_pole_fill_is_not_the_second_error_term():
     model can absorb leaves no residual at all -- so a null result here does not mean the
     pole fill is harmless, only that the discrepancy principle cannot see it.
     """
-    import src.double_fourier_sphere as dfsmod
+    import hp2sph.double_fourier_sphere as dfsmod
 
     nside = 16
     original = dfsmod.POLE_INTERP_NPTS
@@ -254,7 +254,7 @@ def test_the_alias_fold_plan_is_what_makes_the_residual_stagnate():
         up, fc = transform_healpix_to_grid(z)
         _, dfs = DFS(up, fc, spin=2)
     target, phase, keep = dfs_fold_plan(nside, 2, 1e-2)
-    from src.nuFFT import apply_nuFFT
+    from hp2sph.nuFFT import apply_nuFFT
 
     rho = []
     with contextlib.redirect_stdout(io.StringIO()):

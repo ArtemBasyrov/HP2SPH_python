@@ -4,19 +4,17 @@ A spin-2 polarization field is carried as a single complex map ``Q + i*U``. The
 interpolation stage must keep that complex content (it previously took ``.real``
 of every ring), and the latitude nuFFT must round-trip a complex spectrum. The
 real intensity (I) path must stay bit-identical.
-
-See SPIN2_PLAN.md (Phase 2).
 """
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from src.data_interpolation import (
+from hp2sph.data_interpolation import (
     transform_healpix_to_grid,
     transform_grid_to_healpix,
 )
-from src.nuFFT import apply_nuFFT, inverse_nuFFT
+from hp2sph.nuFFT import apply_nuFFT, inverse_nuFFT
 
 
 def _real_map(nside, lmax, seed):
@@ -89,7 +87,7 @@ def test_nuFFT_complex_roundtrip(nside, relerr):
 
 def test_masked_nuFFT_matches_unmasked_when_mask_is_all_true(nside):
     """An all-true mask must reproduce the unmasked solve (no accidental reweighting)."""
-    from src.double_fourier_sphere import DFS
+    from hp2sph.double_fourier_sphere import DFS
 
     z = _real_map(nside, 2 * nside, seed=3)
     up, fc = transform_healpix_to_grid(z)
@@ -101,7 +99,7 @@ def test_masked_nuFFT_matches_unmasked_when_mask_is_all_true(nside):
 
 def test_lsmr_matches_cg_on_the_unmasked_problem(nside, relerr):
     """Without a mask the fit is well posed, so LSMR and CG must agree."""
-    from src.double_fourier_sphere import DFS
+    from hp2sph.double_fourier_sphere import DFS
 
     z = _real_map(nside, 2 * nside, seed=5)
     up, fc = transform_healpix_to_grid(z)
@@ -118,7 +116,7 @@ def test_spin_result_is_insensitive_to_the_cg_tolerance():
     The folded system is full rank, so this is genuine convergence rather than the
     early stopping the superseded masked (LSMR, rank-deficient) route relied on.
     """
-    from src.spin_transform import forward_spin
+    from hp2sph.spin_transform import forward_spin
 
     nside, lmax = 16, 32
     rng = np.random.default_rng(4)

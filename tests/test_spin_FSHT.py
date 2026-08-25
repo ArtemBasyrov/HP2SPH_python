@@ -8,17 +8,15 @@ The decode/convention is validated end-to-end against healpy ``map2alm_spin`` us
 the *library's own* equiangular analysis (``ft_sphere.spinsph_analysis``) as the
 analysis stage -- this isolates the Phase-4 output side from the hand-rolled spin
 DFS/nuFFT analysis (whose ``m != 0`` accuracy is still being worked; see
-SPIN2_PLAN.md). Self-contained algebra checks pin the E/B combination.
-
-See SPIN2_PLAN.md (Phase 4).
+the spin-2 work).  Self-contained algebra checks pin the E/B combination.
 """
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from src import ft_sphere
-from src.FSHT import (
+from hp2sph import ft_sphere
+from hp2sph.FSHT import (
     preparation,
     convert_to_bivar_coeffs,
     spin_to_EB,
@@ -73,7 +71,7 @@ def test_conjugate_F_readout_matches_the_minus_spin_array():
     (``_spin_F_col``) and phase (``_spin_conv_phase``) lookups it goes through, which
     is what lets ``forward_spin`` drop the second analysis pass.
     """
-    from src.spin_transform import _build_spin_F, _signed_spin_alm
+    from hp2sph.spin_transform import _build_spin_F, _signed_spin_alm
 
     lmax = 10
     rng = np.random.default_rng(17)

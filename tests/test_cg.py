@@ -1,4 +1,4 @@
-"""``src.cg`` as a linear-algebra routine, independent of the pipeline.
+"""``hp2sph.cg`` as a linear-algebra routine, independent of the pipeline.
 
 Everything here is a small dense system built in the test, so a reference answer is
 available in closed form and nothing depends on HEALPix, finufft or the alias fold.
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from scipy.sparse.linalg import cg as scipy_cg
 
-from src.cg import _axpy_for, cg_normal_equations, weighted_norm2
+from hp2sph.cg import _axpy_for, cg_normal_equations, weighted_norm2
 
 
 def _least_squares_problem(m=40, n=12, seed=0, complex_=True, norm=1.0):
@@ -398,7 +398,7 @@ def test_blas_and_fallback_iterations_agree(monkeypatch, complex_):
         return cg_normal_equations(lambda v: N @ v, rhs, bw2, rtol=1e-14, maxiter=200)
 
     x_blas, info_blas = solve()
-    monkeypatch.setattr("src.cg._axpy_for", lambda *a: None)
+    monkeypatch.setattr("hp2sph.cg._axpy_for", lambda *a: None)
     x_numpy, info_numpy = solve()
 
     assert info_blas == info_numpy

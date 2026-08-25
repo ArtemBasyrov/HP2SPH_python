@@ -9,12 +9,12 @@ import numpy as np
 import pytest
 
 # The FSHT module loads the C library on import; skip cleanly if it is missing.
-pytest.importorskip("src.ft_sphere")
+pytest.importorskip("hp2sph.ft_sphere")
 
-from src.data_interpolation import transform_healpix_to_grid  # noqa: E402
-from src.double_fourier_sphere import DFS  # noqa: E402
-from src.nuFFT import apply_nuFFT  # noqa: E402
-from src.FSHT import (  # noqa: E402
+from hp2sph.data_interpolation import transform_healpix_to_grid  # noqa: E402
+from hp2sph.double_fourier_sphere import DFS  # noqa: E402
+from hp2sph.nuFFT import apply_nuFFT  # noqa: E402
+from hp2sph.FSHT import (  # noqa: E402
     preparation,
     convert_to_bivar_coeffs,
     FSHT,

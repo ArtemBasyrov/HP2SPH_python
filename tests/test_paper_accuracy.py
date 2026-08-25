@@ -60,7 +60,7 @@ import healpy as hp
 import pytest
 
 # The pipeline helpers load the C library on import; skip cleanly if it is missing.
-pytest.importorskip("src.ft_sphere")
+pytest.importorskip("hp2sph.ft_sphere")
 
 from tests.pipeline_helpers import forward_alm, calibrate_scale  # noqa: E402
 

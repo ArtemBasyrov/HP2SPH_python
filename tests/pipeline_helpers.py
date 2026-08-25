@@ -8,7 +8,7 @@ genuinely test-only.
 
 import numpy as np
 
-from src.pipeline import (  # noqa: F401  (re-exported for the test suite)
+from hp2sph.pipeline import (  # noqa: F401  (re-exported for the test suite)
     forward_C,
     forward_alm,
     backward_map,
@@ -32,7 +32,7 @@ def calibrate_scale(nside, lmax, ell_probe=2, **nufft_kw):
     Must use the same ``nufft_kw`` as the forward it calibrates.
 
     Verification only: the production scale is the first-principles
-    ``FSHT.SCALE_2PI`` and a best fit differs from it by ~5e-5 (see CLAUDE.md).
+    ``FSHT.SCALE_2PI`` and a best fit differs from it by ~5e-5.
     """
     import healpy as hp
 

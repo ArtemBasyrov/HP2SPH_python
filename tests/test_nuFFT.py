@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from src.data_interpolation import transform_healpix_to_grid, create_latitude_array
-from src.double_fourier_sphere import DFS
-from src.nuFFT import (
+from hp2sph.data_interpolation import transform_healpix_to_grid, create_latitude_array
+from hp2sph.double_fourier_sphere import DFS
+from hp2sph.nuFFT import (
     apply_nuFFT,
     inverse_nuFFT,
     compute_voronoi_weights_1d,
@@ -89,7 +89,7 @@ def test_voronoi_weights_sum_to_domain():
 # north pole -- which sits exactly ON the seam -- at half its true weight and gave
 # the missing half to the southernmost mirrored ring.
 def _dfs_samples(nside):
-    from src.nuFFT import _upsampled_latitudes
+    from hp2sph.nuFFT import _upsampled_latitudes
 
     return _upsampled_latitudes(nside)
 
@@ -105,7 +105,7 @@ def test_voronoi_weights_are_mirror_symmetric(nside):
     """A sample set symmetric under ``x -> -x`` must get symmetric weights.
 
     This is the property the old implementation broke, and it is a prerequisite for
-    halving the latitude solve with the DFS mirror symmetry (fix_pass_2.md item 1).
+    halving the latitude solve with the DFS mirror symmetry.
     """
     x = _dfs_samples(nside)
     w = compute_voronoi_weights_1d(x)

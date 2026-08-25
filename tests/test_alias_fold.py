@@ -7,24 +7,24 @@ unresolved mode vanishes there. The first assertion is simply false; the second 
 to many digits for all but a handful of (ring, mode) pairs.
 
 ``ring_alias_target`` / ``ring_fold_plan`` / ``dfs_fold_plan`` state that exactly, and
-``apply_nuFFT(fold=...)`` solves against it. See fix_pass_1.md item A.
+``apply_nuFFT(fold=...)`` solves against it.
 """
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from src.data_interpolation import (
+from hp2sph.data_interpolation import (
     mode_pole_envelope,
     ring_alias_target,
     ring_fold_plan,
     ring_pixel_counts,
     transform_healpix_to_grid,
 )
-from src.double_fourier_sphere import DFS, dfs_fold_plan
-from src.nuFFT import _fold_ops, apply_nuFFT
-from src.FSHT import inverse_FSHT_spin
-from src.spin_transform import _build_spin_F, _signed_spin_alm, forward_spin, SPIN
+from hp2sph.double_fourier_sphere import DFS, dfs_fold_plan
+from hp2sph.nuFFT import _fold_ops, apply_nuFFT
+from hp2sph.FSHT import inverse_FSHT_spin
+from hp2sph.spin_transform import _build_spin_F, _signed_spin_alm, forward_spin, SPIN
 
 
 def _fold(array, target, phase):
@@ -63,7 +63,7 @@ def test_alias_model_reproduces_the_measured_ring_spectrum(nside):
     F = _build_spin_F(
         _signed_spin_alm(aE, aB, lmax, +SPIN), lmax, L + 1, 2 * L + 1, +SPIN
     )
-    from src.nuFFT import inverse_nuFFT
+    from hp2sph.nuFFT import inverse_nuFFT
 
     _, bivar = inverse_FSHT_spin(F, nside, +SPIN)
     exact = np.asarray(inverse_nuFFT(np.asarray(bivar)))
@@ -127,7 +127,7 @@ def test_envelope_bounds_the_true_latitude_profile(nside):
     by six orders at the band edge).
     """
     lmax = 2 * nside
-    from src.nuFFT import inverse_nuFFT
+    from hp2sph.nuFFT import inverse_nuFFT
 
     for m in (2, 3):
         if m > lmax - 1:

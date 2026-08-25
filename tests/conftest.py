@@ -12,11 +12,11 @@ libfasttransforms C library.
 
 import os
 
-# Mirrors src/_bootstrap.py, which cannot run first here: conftest imports healpy
+# Mirrors hp2sph/_bootstrap.py, which cannot run first here: conftest imports healpy
 # below, and libomp reads its thread count when the image loads. One thread per
-# OpenMP runtime is a correctness requirement, not tuning -- see src/_openmp.py.
-# Deliberately duplicated rather than imported from src: importing the package here
-# would pull in src/FSHT.py, which raises ImportError without libfasttransforms, and
+# OpenMP runtime is a correctness requirement, not tuning -- see hp2sph/_openmp.py.
+# Deliberately duplicated rather than imported from hp2sph: importing the package here
+# would pull in hp2sph/FSHT.py, which raises ImportError without libfasttransforms, and
 # that would break `pytest -m "not ft"` for anyone who has not built the C library.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 _threads = os.environ.get("HP2SPH_OMP_THREADS", "1").strip()

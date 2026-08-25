@@ -3,7 +3,7 @@
 import numpy as np
 import healpy as hp
 
-from src.data_interpolation import (
+from hp2sph.data_interpolation import (
     get_ring_indices,
     create_latitude_array,
     transform_healpix_to_grid,

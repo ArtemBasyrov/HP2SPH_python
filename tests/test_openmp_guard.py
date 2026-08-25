@@ -3,12 +3,12 @@
 Three dependencies each vendor their own copy of the LLVM OpenMP runtime (healpy,
 finufft, and libfasttransforms via Homebrew's libomp) and all three load into one
 process. Unless each is held to one thread the process crashes or hangs -- see
-``src/_openmp.py`` for the measured failure modes. Two guards keep that from
+``hp2sph/_openmp.py`` for the measured failure modes. Two guards keep that from
 happening, and both are load-bearing:
 
-* ``src/_bootstrap.py`` FORCES ``OMP_NUM_THREADS=1`` before anything links libomp,
+* ``hp2sph/_bootstrap.py`` FORCES ``OMP_NUM_THREADS=1`` before anything links libomp,
   because libomp reads the count when the image loads;
-* ``src/_openmp.py`` pins every already-loaded runtime through its own handle,
+* ``hp2sph/_openmp.py`` pins every already-loaded runtime through its own handle,
   which is the only thing that helps when a library loaded before ``src`` did.
 
 These tests have to run in a subprocess: the environment has to be wrong BEFORE
@@ -62,7 +62,7 @@ def _run(preamble="", **env_overrides):
     except subprocess.TimeoutExpired:
         pytest.fail(
             f"the transform hung for {TIMEOUT_S}s with env {env_overrides} -- the "
-            "OpenMP guards in src/_bootstrap.py and src/_openmp.py are the thing to "
+            "OpenMP guards in hp2sph/_bootstrap.py and hp2sph/_openmp.py are the thing to "
             "look at"
         )
 
@@ -86,7 +86,7 @@ def test_forward_runs_with_no_openmp_env_at_all():
 def test_forward_survives_an_exported_omp_num_threads(threads):
     """A user with ``OMP_NUM_THREADS`` exported in their shell is the common case.
 
-    Before ``src/_bootstrap.py`` started FORCING the value, this hung: the guard
+    Before ``hp2sph/_bootstrap.py`` started FORCING the value, this hung: the guard
     used ``setdefault``, so an exported value won and every runtime came up
     multithreaded.
     """
@@ -95,7 +95,7 @@ def test_forward_survives_an_exported_omp_num_threads(threads):
 
 @pytest.mark.ft
 def test_forward_survives_healpy_being_imported_first():
-    """``src/_bootstrap.py`` cannot win here, so the in-process pin has to.
+    """``hp2sph/_bootstrap.py`` cannot win here, so the in-process pin has to.
 
     healpy's libomp has already loaded and read its thread count by the time any
     ``src`` code runs, so only ``_openmp.pin()`` can still tame it.
@@ -116,7 +116,7 @@ def test_pin_reports_the_openmp_runtimes_it_found():
     built, not of this repo.
     """
     healpy = pytest.importorskip("healpy")  # noqa: F841
-    from src import _openmp
+    from hp2sph import _openmp
 
     if not _openmp.loaded_images()[1]:
         pytest.skip(f"no loaded-image probe for {sys.platform}")
@@ -134,9 +134,9 @@ def test_threading_is_refused_or_allowed_according_to_the_runtime_count():
     * one runtime (a conda-forge stack sharing ``llvm-openmp``, with
       libfasttransforms built against it) -> threading is allowed.
 
-    ``tools/build_fasttransforms.sh --prefix <env>`` is what produces the second.
+    ``scripts/build_fasttransforms.sh --prefix <env>`` is what produces the second.
     """
-    from src import _openmp
+    from hp2sph import _openmp
 
     paths = _openmp.runtime_paths()
     if not paths:
@@ -164,7 +164,7 @@ def test_pin_does_not_rescan_once_warm():
     decoding every loaded library's path on each transform cost ~3% of the forward
     at nside 128, which is why the count guard exists.
     """
-    from src import _openmp
+    from hp2sph import _openmp
 
     if not _openmp.loaded_images()[1]:
         pytest.skip(f"no loaded-image probe for {sys.platform}")
@@ -204,9 +204,9 @@ _RUNTIME_REPORT = """
 import sys, contextlib, io
 sys.path.insert(0, {root!r})
 import numpy as np, healpy as hp
-from src import _openmp
+from hp2sph import _openmp
 print("BEFORE", len(_openmp.runtime_paths()))
-import src.ft_sphere  # noqa: F401  -- this is what resolves FASTTRANSFORMS_LIB
+import hp2sph.ft_sphere  # noqa: F401  -- this is what resolves FASTTRANSFORMS_LIB
 print("AFTER", len(_openmp.runtime_paths()))
 from tests.pipeline_helpers import forward_C
 mp = hp.alm2map(np.zeros(hp.Alm.getsize(32), dtype=complex) + 1.0, nside=16, lmax=32)
@@ -244,7 +244,7 @@ def _run_probe(extra=""):
     for key in ("OMP_NUM_THREADS", "KMP_DUPLICATE_LIB_OK", "HP2SPH_OMP_THREADS"):
         env.pop(key, None)
     script = _PROBE.format(
-        probe=os.path.join(REPO_ROOT, "src", "_openmp.py"), extra=extra
+        probe=os.path.join(REPO_ROOT, "hp2sph", "_openmp.py"), extra=extra
     )
     return subprocess.run(
         [sys.executable, "-c", script],
@@ -274,7 +274,7 @@ def _run_report(out_path, **env_overrides):
     except subprocess.TimeoutExpired:
         pytest.fail(
             f"the transform hung for {TIMEOUT_S}s with env {env_overrides} -- a "
-            "threaded deadlock is exactly what src/_openmp.py exists to prevent"
+            "threaded deadlock is exactly what hp2sph/_openmp.py exists to prevent"
         )
     return result
 
@@ -301,17 +301,17 @@ def test_libfasttransforms_does_not_add_an_openmp_runtime():
     stack was built, and fails only for a library linked against a runtime nothing else
     in the process uses -- which is what makes threading unavailable.
 
-    The baseline has to be a SEPARATE process: ``src/__init__.py`` imports ``FSHT``,
+    The baseline has to be a SEPARATE process: ``hp2sph/__init__.py`` imports ``FSHT``,
     which imports ``ft_sphere``, so any ``src`` import has already loaded the library.
-    The probe therefore loads ``src/_openmp.py`` by path, bypassing the package.
+    The probe therefore loads ``hp2sph/_openmp.py`` by path, bypassing the package.
     """
-    from src import _openmp
+    from hp2sph import _openmp
 
     if not _openmp.loaded_images()[1]:
         pytest.skip(f"no loaded-image probe for {sys.platform}")
     base = _run_probe()
     assert base.returncode == 0, base.stderr[-2000:]
-    with_ft = _run_probe(extra="import src.ft_sphere  # noqa: F401")
+    with_ft = _run_probe(extra="import hp2sph.ft_sphere  # noqa: F401")
     assert with_ft.returncode == 0, with_ft.stderr[-2000:]
     before = int(_parse(base)["RUNTIMES"])
     after = int(_parse(with_ft)["RUNTIMES"])
@@ -327,7 +327,7 @@ def test_libfasttransforms_does_not_add_an_openmp_runtime():
 @pytest.mark.ft
 def test_threading_is_usable_when_one_runtime_is_loaded(tmp_path):
     """Threading must not merely be *refused safely* -- where possible it must WORK."""
-    from src import _openmp
+    from hp2sph import _openmp
 
     if not _openmp.loaded_images()[1]:
         pytest.skip(f"no loaded-image probe for {sys.platform}")
@@ -350,7 +350,7 @@ def test_threaded_output_matches_single_threaded(tmp_path):
     exactly. The tolerance is loose enough for that and far tighter than any real
     regression.
     """
-    from src import _openmp
+    from hp2sph import _openmp
 
     if not _openmp.loaded_images()[1]:
         pytest.skip(f"no loaded-image probe for {sys.platform}")
@@ -371,7 +371,7 @@ def test_threaded_output_matches_single_threaded(tmp_path):
 
 def _fake_two_runtimes(monkeypatch, calls):
     """Two loaded runtimes whose setters record the count they were given."""
-    from src import _openmp
+    from hp2sph import _openmp
 
     paths = ["/fake/a/libomp.dylib", "/fake/b/libomp.dylib"]
     monkeypatch.setattr(_openmp, "runtime_paths", lambda: paths)
@@ -391,7 +391,7 @@ def test_the_default_count_degrades_to_one_on_a_multi_runtime_stack(monkeypatch)
     chose the default, so it takes the value it would have had before rather than
     turning a working install into an import-time failure.
     """
-    from src import _openmp
+    from hp2sph import _openmp
 
     calls = []
     _fake_two_runtimes(monkeypatch, calls)
@@ -404,7 +404,7 @@ def test_the_default_count_degrades_to_one_on_a_multi_runtime_stack(monkeypatch)
 
 def test_an_explicit_count_still_raises_on_a_multi_runtime_stack(monkeypatch):
     """``HP2SPH_OMP_THREADS=8`` on a stack that deadlocks must still be refused."""
-    from src import _openmp
+    from hp2sph import _openmp
 
     calls = []
     paths = _fake_two_runtimes(monkeypatch, calls)
@@ -424,9 +424,9 @@ def test_bootstrap_loads_at_one_thread_whatever_the_default_is():
     Threads are granted afterwards by ``pin``, which can count the runtimes first.
     Putting the real count in the environment instead would let a stack with several
     vendored runtimes fork a worker pool per runtime as its images load, which is
-    the hang ``src/_openmp.py`` exists to prevent.
+    the hang ``hp2sph/_openmp.py`` exists to prevent.
     """
-    from src import _openmp
+    from hp2sph import _openmp
 
     assert _openmp.BOOTSTRAP_THREADS == 1
     assert os.environ["OMP_NUM_THREADS"] == "1"

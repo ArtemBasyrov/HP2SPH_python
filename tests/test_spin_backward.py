@@ -18,18 +18,16 @@ Two bugs had to be fixed to get there, and each has a dedicated test below:
   but on the synthesis side it discarded the ``|m| = |spin|`` content, which for a
   spin field is O(1) AT the pole (the same asymmetry ``ring_fold_plan`` handles on the
   analysis side). It left the innermost polar rings ~100% wrong.
-
-See SPIN2_PLAN.md (the "native spin backward" item) and CLAUDE.md.
 """
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from src import ft_sphere
-from src.FSHT import _spin_conv_phase, spin_g_to_library, spin_g_from_library
-from src.data_interpolation import transform_grid_to_healpix, ring_pixel_counts
-from src.spin_transform import forward_spin, backward_spin
+from hp2sph import ft_sphere
+from hp2sph.FSHT import _spin_conv_phase, spin_g_to_library, spin_g_from_library
+from hp2sph.data_interpolation import transform_grid_to_healpix, ring_pixel_counts
+from hp2sph.spin_transform import forward_spin, backward_spin
 
 pytestmark = pytest.mark.ft
 
@@ -171,7 +169,7 @@ def test_polar_alias_keeps_the_analysis_roundtrip_exact():
     the alias folds in is exactly 0 and the round trip stays bit-exact -- which is why
     truncation survived undetected for so long.
     """
-    from src.data_interpolation import transform_healpix_to_grid
+    from hp2sph.data_interpolation import transform_healpix_to_grid
 
     nside = 8
     rng = np.random.default_rng(4)

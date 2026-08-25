@@ -1,6 +1,6 @@
 """Phase 5: end-to-end spin-2 (Q/U <-> E/B) transforms vs healpy.
 
-``src.spin_transform.forward_spin`` / ``backward_spin`` go HEALPix (Q,U) <-> (aE,aB)
+``hp2sph.spin_transform.forward_spin`` / ``backward_spin`` go HEALPix (Q,U) <-> (aE,aB)
 through the spin stages. Two routes are covered:
 
 * ``analysis="hp2sph"`` (the default, the true method): the hand-rolled DFS + latitude
@@ -14,16 +14,14 @@ through the spin stages. Two routes are covered:
 ``backward_spin`` has both routes too; the round-trip test here keeps the LIBRARY
 route on both ends so it stays a test of that route. The native synthesis
 (``synthesis="hp2sph"``, exact) has its own file, ``tests/test_spin_backward.py``.
-
-See SPIN2_PLAN.md (Phase 5).
 """
 
 import numpy as np
 import healpy as hp
 import pytest
 
-from src import ft_sphere
-from src.spin_transform import forward_spin, backward_spin
+from hp2sph import ft_sphere
+from hp2sph.spin_transform import forward_spin, backward_spin
 
 pytestmark = pytest.mark.ft
 
@@ -189,8 +187,8 @@ def test_spin_hp2sph_single_pass_matches_the_two_pass_forward():
     stay well under the transform's error against the input sky -- otherwise the
     dropped pass was carrying information after all.
     """
-    from src.spin_transform import _spin_F_hp2sph
-    from src.FSHT import spin_to_EB
+    from hp2sph.spin_transform import _spin_F_hp2sph
+    from hp2sph.FSHT import spin_to_EB
 
     nside, lmax = 16, 24
     aE, aB = _random_EB(lmax, seed=13)

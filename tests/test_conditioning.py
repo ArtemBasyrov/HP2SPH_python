@@ -29,7 +29,7 @@ import numpy as np
 import healpy as hp
 import pytest
 
-from src.nuFFT import _upsampled_latitudes
+from hp2sph.nuFFT import _upsampled_latitudes
 
 
 def _vandermonde_cond(nside, half_band):
@@ -66,11 +66,11 @@ def test_square_band_conditioning_blows_up_with_nside():
 # --------------------------------------------------------------------------- #
 # End-to-end: the two regimes                                                  #
 # --------------------------------------------------------------------------- #
-def _roundtrip(nside, **nufft_kw):
-    from src.data_interpolation import transform_healpix_to_grid
-    from src.double_fourier_sphere import DFS
-    from src.nuFFT import apply_nuFFT
-    from src.FSHT import FSHT
+def _roundtrip(nside, synthesis_eps=None, **nufft_kw):
+    from hp2sph.data_interpolation import transform_healpix_to_grid
+    from hp2sph.double_fourier_sphere import DFS
+    from hp2sph.nuFFT import apply_nuFFT
+    from hp2sph.FSHT import FSHT
     from tests.pipeline_helpers import backward_map
 
     lmax = 2 * nside
@@ -84,22 +84,34 @@ def _roundtrip(nside, **nufft_kw):
     ups, fc = transform_healpix_to_grid(mp)
     _, dfs = DFS(ups, fc)
     C = FSHT(apply_nuFFT(np.asarray(dfs), **nufft_kw))
-    rec = backward_map(C, nside)
+    kw = {} if synthesis_eps is None else {"eps": synthesis_eps}
+    rec = backward_map(C, nside, **kw)
     return np.linalg.norm(rec - mp) / np.linalg.norm(mp)
 
 
 @pytest.mark.ft
 def test_square_svd_invertible_at_nside64_where_cg_floors():
-    """SQUARE band: dense-SVD reaches ~1e-5 invertibility where CG-on-normal floors.
+    """SQUARE band: the dense SVD inverts at nside 64 where CG-on-normal floors.
 
     With the (ill-conditioned) square ``solve_modes=8*nside+1`` band, solving via an
-    exact SVD instead of finufft+CG-on-normal-equations recovers near
-    machine-precision invertibility at nside=64, where CG floors at
-    ~finufft_eps*cond.
+    exact SVD instead of finufft+CG-on-normal-equations keeps the round trip usable
+    at nside=64, where CG floors at ~finufft_eps*cond.
+
+    The SVD *solve* is far better than the round trip shows: evaluating its
+    coefficients densely reproduces the DFS samples to 5.7e-7. What limits the round
+    trip is the latitude SYNTHESIS. The square band is ill-conditioned (cond 8.5e10
+    here), so the exact coefficient vector is ~8.4e6 times larger in norm than the
+    map, and the synthesis NUFFT's own tolerance is amplified by that factor:
+    eps=1e-12 gives 3.7e-4 and eps=1e-13 gives 2.1e-5, tracking eps directly.
+    finufft refuses eps below ~1e-13 at the default upsampling, so 1e-13 is the best
+    this route can do -- "bit-exact" applies to the low-nside cases pinned below, not
+    to nside 64. The amplification is a property of the band, not of the weights: it
+    is identical (8.376e6) under the current wrapped Voronoi weights and the older
+    clamped ones.
     """
     sq = dict(solve_modes=8 * 64 + 1)
-    rt_svd = _roundtrip(64, solver="svd", **sq)
-    rt_cg = _roundtrip(64, solver="cg", **sq)
+    rt_svd = _roundtrip(64, solver="svd", synthesis_eps=1e-13, **sq)
+    rt_cg = _roundtrip(64, solver="cg", synthesis_eps=1e-13, **sq)
     assert rt_svd < 1e-4, f"SVD round trip {rt_svd:.2e} not invertible at ns64"
     assert rt_cg > 1e-3, (
         f"CG round trip {rt_cg:.2e} unexpectedly good (regime changed?)"
