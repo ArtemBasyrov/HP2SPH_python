@@ -1,192 +1,122 @@
 # HP2SPH_python
 
-A Python implementation of **HP2SPH** — fast, accurate conversion between
-**HEALPix sky maps** and **spherical-harmonic coefficients (`alm`)**, reproducing
+HEALPix map ↔ spherical-harmonic coefficients (`alm`), for intensity (`I`) and spin-2 polarization (`Q`/`U` → `E`/`B`).
+Implements Drake & Wright, [arXiv:1904.10514](https://arxiv.org/abs/1904.10514).
 
-> K. P. Drake & G. B. Wright, *A Fast and Accurate Algorithm for Spherical
-> Harmonic Analysis on HEALPix Grids with Applications to the Cosmic Microwave
-> Background Radiation*, [arXiv:1904.10514](https://arxiv.org/abs/1904.10514).
+**Research code under active development.** The API is not stable and is not tuned for wall-clock speed.
 
-The transform is routed through a structured latitude–longitude grid where fast algorithms apply.
-The four stages are ring FFTs, a Double Fourier Sphere, a latitude non-uniform FFT, and Slevinsky's fast spherical-harmonic transform (`libfasttransforms`).
+## What it does
 
-Both the scalar intensity (`I`) and the spin-2 polarization (`Q`/`U` → `E`/`B`) transforms are implemented.
+A HEALPix grid has no exact quadrature rule, so the transform is routed through a structured latitude–longitude grid in four stages:
 
-## Installation
+1. **Ring FFTs** — FFT each ring onto an equiangular longitude grid.
+2. **Double Fourier Sphere** — mirror across the poles to make latitude periodic.
+3. **Latitude nuFFT** — ring colatitudes are non-uniform, so fit the band-limited latitude modes (finufft + CG).
+4. **FSHT** — Slevinsky's `libfasttransforms` maps the result to `alm`.
 
-The Python dependencies are on PyPI.
-The FSHT stage additionally needs the native **`libfasttransforms`** C library, which is **not** packaged on PyPI.
+The forward pass also models the polar-ring longitude alias instead of zero-padding it away.
+A coarse ring measures a whole alias family, not a single mode `m`, and for spin-2 the modes near `|m| = 2` are O(1) at a pole.
+That is what produces the polarization accuracy below.
 
-### 1. Python package
+Each stage is importable on its own from `hp2sph`.
 
-The project environment is **conda-forge**, not pip.
-That is not a preference: the PyPI `healpy` and `finufft` wheels each vendor their own OpenMP runtime, and two of those in one process deadlock (see [OpenMP](#openmp)).
+## Install
+
+conda-forge only.
+The PyPI `healpy` and `finufft` wheels each vendor their own OpenMP runtime, and more than one in a process deadlocks, so they can never thread.
 
 ```bash
 micromamba create -y -f environment.yml   # creates hp2sph-omp
 micromamba activate hp2sph-omp
+pip install -e . --no-deps
+scripts/build_fasttransforms.sh --prefix "$CONDA_PREFIX"
 ```
 
-`pip install -e .` still works if you only need the single-threaded pipeline, and installs numpy, scipy, astropy, healpy and finufft.
+`libfasttransforms` is the only dependency built from source; it has no conda-forge package.
+It needs FFTW, MPFR, OpenBLAS (or Accelerate) and OpenMP — on macOS, `brew install libomp fftw mpfr gmp`.
+The script links it against the environment's `llvm-openmp` and patches an upstream bug that breaks Apple Silicon builds.
 
-### 2. The `libfasttransforms` C library
-
-This is the only non-Python dependency.
-Build it from source ([MikaelSlevinsky/FastTransforms](https://github.com/MikaelSlevinsky/FastTransforms)).
-Its own dependencies are FFTW, MPFR, OpenBLAS (or Apple Accelerate) and OpenMP.
-
-- **Linux:** `make` (install FFTW/MPFR/OpenBLAS/OpenMP via your package manager or conda).
-- **macOS:** `brew install libomp fftw mpfr gmp`, then `make CC=clang FT_USE_APPLEBLAS=1`.
-  On **Apple Silicon** the upstream `make.inc` hardcodes Intel Homebrew paths (`/usr/local/opt/...`).
-  Edit it to `/opt/homebrew/opt/...` before building, or it fails with `'fftw3.h' file not found`.
-
-The library is **located automatically** at runtime.
-No environment variable is required when it is installed in any of these places, searched in order:
-
-1. `$FASTTRANSFORMS_LIB` (explicit override; full path to the library),
-2. a `lib/` directory next to the package or at the repo root (drop or symlink the built `libfasttransforms.{dylib,so}` there for a self-contained checkout),
-3. the active conda/virtualenv `lib` dir or the OS loader path,
-4. a prebuilt `FastTransforms.jl` artifact under `~/.julia`, if present (just a precompiled binary — no Julia runtime is used).
-
-If none load, the FSHT stage raises an `ImportError` with a build/install hint.
+Threading is on by default: `HP2SPH_OMP_THREADS` sizes the OpenMP pool (the FSHT), `HP2SPH_NUFFT_WORKERS` the Python pool (stages 1–3).
+On macOS also set `MallocMediumZone=0`, worth ~1.15×; it cannot be set from inside Python.
 
 ## Usage
 
-Run from the repo root.
-The OpenMP guards are set automatically on import, so **no environment-variable prefix is needed** -- in particular the `OMP_NUM_THREADS=1` older notes asked for is handled for you (see [OpenMP](#openmp) below):
-
-```bash
-python main.py path/to/sky_map.fits            # forward transform
-python main.py path/to/sky_map.fits --roundtrip --save
-```
-
-### Intensity (scalar)
-
 ```python
 import healpy as hp
-from main import forward, backward
+from hp2sph import forward_alm, forward_C, backward_map
 
-mp = hp.read_map("sky_map.fits", field=(0, 1, 2))  # (I, Q, U); forward uses I
-alm = forward(mp)          # HEALPix map -> spherical-harmonic coefficients
-mp_back = backward(alm)    # and back
+nside = 256
+mp = hp.read_map("sky_map.fits", field=0)   # one intensity map; use mp[0] for an IQU stack
+
+alm = forward_alm(mp, lmax=2 * nside)       # healpy-ordered alm
+C = forward_C(mp)                           # or the raw (L+1, 2L+1) array
+mp_back = backward_map(C)
 ```
 
-### Polarization (spin-2)
-
-`forward_spin` takes a `(Q, U)` map and returns healpy-ordered `(aE, aB)`.
-Ground truth throughout is healpy's `map2alm_spin` / `alm2map_spin` with `spin=2`.
-
 ```python
-import healpy as hp
-from src.spin_transform import forward_spin, backward_spin
+from hp2sph import forward_spin, backward_spin
 
 Q, U = hp.read_map("sky_map.fits", field=(1, 2))
-aE, aB = forward_spin(Q, U, lmax=2 * nside)        # the true HP2SPH route
+aE, aB = forward_spin(Q, U, lmax=2 * nside - 1)
 Q_back, U_back = backward_spin(aE, aB, nside)
 ```
 
-Each direction has two routes — `forward_spin(analysis=...)` and `backward_spin(synthesis=...)`:
+`backward_spin` reproduces `hp.alm2map_spin` to ~2e-13 for `lmax ≤ 2·nside − 1`.
+The `l = m = 2·nside` coefficient is the longitude Nyquist and cannot be represented; `lmax > 2·nside` raises `ValueError`.
 
-| route | what it does | when to use it |
-|---|---|---|
-| `"hp2sph"` (default) | the hand-rolled DFS + latitude nuFFT, no resampling | the real method; more accurate than healpy at every nside tested |
-| `"library"` | resample onto the FastTransforms equiangular grid, then its exact `spinsph_analysis` / `spinsph_synthesis` | a resampling-limited cross-check; needs `nside` well above `lmax` |
+## Benchmarks
 
-`backward_spin` on the native route is **exact**: it reproduces `hp.alm2map_spin` to ~2e-13 at every nside tested (8 to 64), for any band `lmax ≤ 2·nside - 1`.
-The single `ℓ = m = lmax` coefficient at `lmax = 2·nside` is the grid's longitude Nyquist and cannot be represented; use `lmax ≤ 2·nside - 1` if it matters.
-`lmax > 2·nside` raises `ValueError`.
+RMS relative `C_l` error over the top quarter of the band, `cosmology` scenario, `lmax = 2·nside`, median of seeds 0–3.
+From `benchmarks/results/` (tracked in git); [`benchmarks/README.md`](benchmarks/README.md) states how each competitor is configured.
+`healpy iter=3` is an iterative least squares and a near-exact inverse of `alm2map` by construction — the other columns, like HP2SPH, are single-pass quadrature.
 
-The forward models the polar-ring longitude alias explicitly.
-A HEALPix ring of `npix` pixels measures the whole alias family of a mode, not the mode itself, and for a spin-2 field the modes near `|m| = 2` are O(1) at a pole, so the zero-padding misattributed them.
-An earlier fix dropped those entries instead of modelling them; it was removed once the fold proved better in every regime tested, and the "old" column below is what it measured.
+Polarization `C_l^EE`, the most accurate single-pass method at every nside measured:
 
-RMS relative `C_ℓ^EE` error over the top quarter of the band, with `lmax = 2·nside` and a smooth band-limited `(aE, aB)` sky (`slope 1.5`, median of 4 seeds), from `benchmarks/results/accuracy_P.json`:
+| nside | HP2SPH | healpy pixel | healpy ring | healpy `iter=3` |
+|---|---|---|---|---|
+| 32 | **3.28e-5** | 5.71e-4 | 6.97e-4 | 5.30e-8 |
+| 64 | **1.43e-5** | 2.19e-4 | 2.89e-4 | 1.47e-8 |
+| 128 | **4.33e-6** | 8.20e-5 | 1.25e-4 | 5.04e-9 |
+| 256 | **1.55e-6** | 2.50e-5 | 4.47e-5 | 2.37e-9 |
 
-| nside | HP2SPH | HP2SPH (old, removed) | healpy pixel weights | healpy ring weights | healpy `map2alm_spin` |
-|---|---|---|---|---|---|
-| 8 | 2.31e-4 | 5.42e-3 | – | 2.24e-3 | 1.07e-2 |
-| 16 | 9.08e-5 | 6.15e-3 | – | 2.53e-3 | 4.39e-3 |
-| 32 | 3.37e-5 | 2.18e-3 | 5.71e-4 | 6.97e-4 | 1.66e-3 |
-| 64 | 1.37e-5 | 1.85e-3 | 2.19e-4 | 2.89e-4 | 8.31e-4 |
+E→B leakage, median leaked `C_l^BB` from a pure `E` input — the strongest result, improving with resolution:
 
-That makes it the most accurate single-pass polarization analysis in the suite at every nside measured.
-healpy's *iterative* `map2alm` still wins by about 3 orders, because it is a near-exact inverse of `alm2map` by construction rather than a quadrature.
-The fold is also 1.25–2.9× faster than the route it replaced, because the system is full rank again and plain CG replaces LSMR.
-Reproduce with `tests/test_alias_fold.py` and `tests/test_spin_paper_accuracy.py`; the backward accuracy is pinned in `tests/test_spin_backward.py`.
+| nside | HP2SPH | healpy pixel | healpy ring |
+|---|---|---|---|
+| 64 | **3.64e-9** | 2.33e-6 | 4.23e-6 |
+| 128 | **8.53e-10** | 4.09e-7 | 1.10e-6 |
+| 256 | **2.94e-10** | 1.10e-7 | 4.05e-7 |
 
-The individual pipeline stages are exposed in the `src` package (`transform_healpix_to_grid`, `DFS`, `apply_nuFFT`, `FSHT`, and their inverses).
+Intensity `C_l^TT`, which beats ring weights but not pixel weights in this band:
 
-## OpenMP
+| nside | HP2SPH | healpy pixel | healpy ring | healpy `iter=3` |
+|---|---|---|---|---|
+| 256 | 5.05e-5 | 2.51e-5 | 5.39e-5 | 2.74e-9 |
+| 512 | 1.72e-5 | 9.91e-6 | 2.24e-5 | 7.70e-10 |
+| 1024 | 6.25e-6 | 3.39e-6 | 9.94e-6 | 3.00e-10 |
+| 2048 | 2.51e-6 | 1.31e-6 | 2.55e-6 | 9.71e-11 |
 
-Three dependencies each vendor their own copy of the LLVM OpenMP runtime, and all three load into one process:
+The scalar advantage sits one band lower: over `l` from `3·lmax/4` to `7·lmax/8`, the ring-weights error divided by the HP2SPH error grows from 1.97 at nside 32 to 4.42 at nside 1024.
 
-| library | its libomp |
-|---|---|
-| healpy | `site-packages/healpy/.dylibs/libomp.dylib` |
-| finufft | `site-packages/finufft/.dylibs/libomp.dylib` |
-| libfasttransforms | Homebrew's `/opt/homebrew/opt/libomp/lib/libomp.dylib` |
+Scalar forward timings, Apple M4 Pro (10 performance cores), `MallocMediumZone=0`, best of 5:
 
-libomp keeps process-wide state, so more than one copy running a worker pool is unsupported.
-The observed failures are a `OMP: Error #15` abort, a segfault inside the first FastTransforms call, and a hang inside `finufft.Plan.setpts`.
-One thread per runtime avoids all three, so **single-threaded OpenMP is a correctness requirement here, not a tuning choice**.
+| nside | serial | threaded | healpy ring | healpy `iter=3` |
+|---|---|---|---|---|
+| 256 | 0.148 s | 0.067 s | 0.003 s | 0.019 s |
+| 512 | 0.711 s | 0.277 s | 0.017 s | 0.096 s |
+| 1024 | 3.861 s | 1.169 s | 0.110 s | 0.611 s |
 
-You do not have to arrange it.
-`src/_bootstrap.py` sets `OMP_NUM_THREADS=1` and `KMP_DUPLICATE_LIB_OK=TRUE` before anything links libomp, and `src/_openmp.py` pins any runtime that loaded first anyway.
-`OMP_NUM_THREADS` is forced rather than defaulted, because an exported `OMP_NUM_THREADS=8` is the most common way to make the pipeline hang.
-
-Set `HP2SPH_OMP_THREADS` to override the count.
-It is refused with a `MultipleOpenMPRuntimes` error, naming the offending libraries, whenever more than one runtime is loaded -- an explanation beats a segfault.
-`tests/test_openmp_guard.py` pins this behaviour.
-
-### Running with threads
-
-Threading needs every library to share ONE OpenMP runtime.
-The PyPI wheels cannot give you that, so it takes a conda-forge environment plus a matching libfasttransforms build:
-
-```bash
-micromamba create -y -f environment.yml
-tools/build_fasttransforms.sh --prefix "$HOME/micromamba/envs/hp2sph-omp"
-```
-
-conda-forge healpy and finufft both link the env's `llvm-openmp`, and the script links libfasttransforms against the same one.
-Check before opting in -- one path means you are clear:
-
-```bash
-python -c "from src import _openmp; print(_openmp.runtime_paths())"   # one path = clear
-HP2SPH_OMP_THREADS=auto python your_script.py                          # or a number
-```
-
-`auto` means every core.
-The default stays 1 so timings and benchmarks are reproducible; opting in is per-run.
-
-**A repo-local `lib/libfasttransforms.*` shadows the environment**, because it is searched first.
-If one is present, either remove it or point `FASTTRANSFORMS_LIB` at the env build.
-Getting this wrong used to segfault; it now raises with both libomp paths named.
-
-Measured forward transform, this machine (14 cores), median of 3, band `lmax = 2*nside`:
-
-| nside | 1 thread | 4 | 8 | 14 | speedup |
-|---|---|---|---|---|---|
-| 256 | 0.447 s | 0.303 s | 0.281 s | 0.274 s | 1.6x |
-| 512 | 2.031 s | 1.067 s | 0.865 s | 0.840 s | 2.4x |
-
-Only the two C stages scale: at nside 512 the latitude nuFFT goes 1.522 s -> 0.601 s and the FSHT 0.358 s -> 0.096 s.
-`data_interpolation` and `DFS` are serial numpy and do not move.
-Returns flatten past 8 threads.
-Output is identical to the single-threaded result to machine precision.
+All four stages thread; at nside 1024 the FSHT gains 5.2×, the latitude nuFFT 2.5×, the ring FFTs 2.2×.
+Threaded output matches serial to machine precision.
+healpy is a mature C library and is ~10× faster in wall-clock; this is Python around finufft and `libfasttransforms`.
 
 ## Tests
 
 ```bash
-PYTHONPATH=. python -m pytest    # full suite (243 tests)
-python -m pytest -m "not ft"     # skip tests that need libfasttransforms
+python -m pytest              # 415 tests, ~12 s
+python -m pytest -m "not ft"  # skip tests needing libfasttransforms
 ```
 
-Run from the repo root with `PYTHONPATH=.`; the top-level `__init__.py` otherwise hides `src` from `python -m pytest`.
-See [`tests/README.md`](tests/README.md) for the layout.
-Tests that need the C library skip cleanly when it is not installed.
+## License
 
-## Notes
-
-- The math requires float64. The pipeline is pure numpy, so that is the default and there is no precision flag to forget.
-- `backward_spin` runs only the `spin = +2` pass: `z = Q + iU` carries the whole real `(Q, U)` pair, and the `-2` coefficients are fixed by the reality of `Q` and `U`.
+MIT. See [LICENSE](LICENSE).
