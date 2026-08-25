@@ -10,7 +10,7 @@ each could actually be told, because they do not all honour it the same way:
 * HP2SPH splits its NUFFT batch over N Python threads and threads its FastTransforms
   stage through OpenMP.
 * healpy 1.20 exposes NO thread argument; its bundled libsharp reads
-  ``OMP_NUM_THREADS``, which ``src/_bootstrap`` pins to 1. To let healpy thread, set
+  ``OMP_NUM_THREADS``, which ``hp2sph/_bootstrap`` pins to 1. To let healpy thread, set
   ``HP2SPH_OMP_THREADS`` in the ENVIRONMENT before the run -- measured at nside 256,
   that takes ``map2alm`` with ring weights from 19.6 ms to 4.6 ms, and it does not
   slow HP2SPH down (0.92 s to 0.83 s on the spin forward, since its NUFFT plans ask

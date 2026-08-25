@@ -32,11 +32,11 @@ import numpy as np
 import healpy as hp
 
 from benchmarks.common import quiet
-from src.FSHT import to_healpy_alm, from_healpy_alm
-from src.spin_transform import forward_spin, backward_spin
-from src.pipeline import ANALYSIS_EPS, forward_C, backward_map
+from hp2sph.FSHT import to_healpy_alm, from_healpy_alm
+from hp2sph.spin_transform import forward_spin, backward_spin
+from hp2sph.pipeline import ANALYSIS_EPS, forward_C, backward_map
 
-# ``src.pipeline`` is the repo's side-effect-free wiring of the four pipeline
+# ``hp2sph.pipeline`` is the repo's side-effect-free wiring of the four pipeline
 # stages -- the same composition ``main.forward`` wraps with FITS I/O and the same
 # one the test suite pins. This used to import from ``tests.pipeline_helpers``,
 # which put production code behind a test module.
@@ -60,7 +60,7 @@ def set_threads(n):
     * HP2SPH splits its NUFFT batch over ``HP2SPH_NUFFT_WORKERS`` Python threads and
       threads its FastTransforms stage through OpenMP.
     * healpy 1.20 exposes NO thread argument on ``map2alm``/``alm2map``; its bundled
-      libsharp reads ``OMP_NUM_THREADS``, which ``src/_bootstrap`` pins to 1. Lifting
+      libsharp reads ``OMP_NUM_THREADS``, which ``hp2sph/_bootstrap`` pins to 1. Lifting
       that pin needs ``HP2SPH_OMP_THREADS`` set BEFORE ``src`` is imported, which is
       the process's business, not this function's.
 
@@ -75,7 +75,7 @@ def set_threads(n):
         "requested": THREADS,
         "ducc0": THREADS,
         "hp2sph_nufft_workers": THREADS,
-        "openmp": omp or "1 (pinned by src/_bootstrap)",
+        "openmp": omp or "1 (pinned by hp2sph/_bootstrap)",
         "healpy": (
             omp
             if omp
@@ -194,10 +194,10 @@ class HP2SPH(Backend):
         """
         import time
 
-        from src.data_interpolation import transform_healpix_to_grid
-        from src.double_fourier_sphere import DFS, pole_stencil_rows
-        from src.nuFFT import apply_nuFFT
-        from src.FSHT import FSHT
+        from hp2sph.data_interpolation import transform_healpix_to_grid
+        from hp2sph.double_fourier_sphere import DFS, pole_stencil_rows
+        from hp2sph.nuFFT import apply_nuFFT
+        from hp2sph.FSHT import FSHT
 
         # Same route selection as pipeline.forward_C: the default compact CG band
         # goes half-domain, the square-band SVD variant needs the full sample set.
@@ -243,11 +243,11 @@ class HP2SPH(Backend):
         """
         import time
 
-        from src.data_interpolation import transform_healpix_to_grid
-        from src.double_fourier_sphere import DFS, dfs_fold_sparse, pole_stencil_rows
-        from src.nuFFT import apply_nuFFT
-        from src.FSHT import FSHT_spin
-        from src.spin_transform import SPIN, _spin_nufft_kw
+        from hp2sph.data_interpolation import transform_healpix_to_grid
+        from hp2sph.double_fourier_sphere import DFS, dfs_fold_sparse, pole_stencil_rows
+        from hp2sph.nuFFT import apply_nuFFT
+        from hp2sph.FSHT import FSHT_spin
+        from hp2sph.spin_transform import SPIN, _spin_nufft_kw
 
         out = {}
         z = np.asarray(Q) + 1j * np.asarray(U)
@@ -285,11 +285,11 @@ class HP2SPH(Backend):
         import gc
         import resource
 
-        from src.data_interpolation import transform_healpix_to_grid
-        from src.double_fourier_sphere import DFS, dfs_fold_sparse, pole_stencil_rows
-        from src.nuFFT import apply_nuFFT
-        from src.FSHT import FSHT_spin
-        from src.spin_transform import SPIN, _spin_nufft_kw
+        from hp2sph.data_interpolation import transform_healpix_to_grid
+        from hp2sph.double_fourier_sphere import DFS, dfs_fold_sparse, pole_stencil_rows
+        from hp2sph.nuFFT import apply_nuFFT
+        from hp2sph.FSHT import FSHT_spin
+        from hp2sph.spin_transform import SPIN, _spin_nufft_kw
 
         def rss_mb():
             return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
@@ -318,10 +318,10 @@ class HP2SPH(Backend):
         import gc
         import resource
 
-        from src.data_interpolation import transform_healpix_to_grid
-        from src.double_fourier_sphere import DFS, pole_stencil_rows
-        from src.nuFFT import apply_nuFFT
-        from src.FSHT import FSHT
+        from hp2sph.data_interpolation import transform_healpix_to_grid
+        from hp2sph.double_fourier_sphere import DFS, pole_stencil_rows
+        from hp2sph.nuFFT import apply_nuFFT
+        from hp2sph.FSHT import FSHT
 
         def rss_mb():
             return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6

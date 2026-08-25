@@ -5,8 +5,9 @@ Run from the repo root::
     python -m benchmarks.compare_results [OLD_DIR] [NEW_DIR]
 
 Defaults to ``benchmarks/results_s2fft`` (archived) against ``benchmarks/results``
-(current). Every metric here corresponds to a specific claim in CLAUDE.md, so a
-re-baseline can be checked against the docs in one command rather than by hand.
+(current). Every metric here corresponds to a specific claim made in the project
+READMEs, so a re-baseline can be checked against the docs in one command rather
+than by hand.
 
 Why this exists: the recorded benchmark numbers went stale when the project
 environment changed, and nobody noticed because there was no cheap way to

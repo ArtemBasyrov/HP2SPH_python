@@ -28,7 +28,6 @@ import os
 import subprocess
 import sys
 
-import numpy as np
 
 from benchmarks import common
 from benchmarks.common import RESULTS_DIR, env_metadata, markdown_table

@@ -3,7 +3,7 @@
 Everything here is library-agnostic. Anything that knows how to *call* HP2SPH,
 healpy or ducc0 lives in :mod:`benchmarks.backends`.
 
-**Import this module first in every benchmark script.** It runs ``src._bootstrap``
+**Import this module first in every benchmark script.** It runs ``hp2sph._bootstrap``
 (the OpenMP guards) and enables JAX float64 before healpy / finufft /
 libfasttransforms can load. Importing it late is not merely untidy: JAX silently
 falls back to float32 and the transforms diverge, and on macOS the duplicate
@@ -25,7 +25,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # Must precede every numerical import below (see module docstring).
-from src import _bootstrap  # noqa: E402, F401
+from hp2sph import _bootstrap  # noqa: E402, F401
 
 import numpy as np  # noqa: E402
 import healpy as hp  # noqa: E402
@@ -41,7 +41,7 @@ FIGURES_DIR = os.path.join(_REPO_ROOT, "benchmarks", "figures")
 def quiet():
     """Swallow stdout.
 
-    Kept as a backstop only. ``src.data_interpolation`` and ``src.nuFFT`` used to
+    Kept as a backstop only. ``hp2sph.data_interpolation`` and ``hp2sph.nuFFT`` used to
     print per-call timing and solver diagnostics into the measured region; both now
     use ``logging``, so this catches nothing of ours. It still guards against a
     third-party library printing inside a timed call.

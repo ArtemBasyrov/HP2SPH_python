@@ -47,7 +47,7 @@ match.**
 | HP2SPH | splits its NUFFT batch over N Python threads; FastTransforms threads through OpenMP | yes |
 | healpy 1.20 | **no thread argument at all**; bundled libsharp reads `OMP_NUM_THREADS` | only via the environment |
 
-`src/_bootstrap` pins `OMP_NUM_THREADS=1`, so healpy is single-threaded unless
+`hp2sph/_bootstrap` pins `OMP_NUM_THREADS=1`, so healpy is single-threaded unless
 `HP2SPH_OMP_THREADS` is exported **before** the run. Measured at nside 256, exporting it
 takes `map2alm` with ring weights from 19.6 ms to 4.6 ms — so a run without it
 **under-reports healpy by roughly 4x** and should not be quoted as a threaded
@@ -56,8 +56,8 @@ comparison.
 Setting it does not cost HP2SPH anything: its NUFFT plans ask for one thread each
 regardless of the OpenMP setting, and only the FastTransforms stage gains (0.92 s to
 0.83 s on the spin forward at nside 256). Note that this is the opposite of what naive
-OpenMP threading does to the spin path — see "Threading, and how to get it" in
-`CLAUDE.md`, where letting finufft thread its own batch made the transform 2-3x slower.
+OpenMP threading does to the spin path: letting finufft thread its own batch made
+the transform 2-3x slower.
 
 Do not set `OMP_NUM_THREADS` or `KMP_DUPLICATE_LIB_OK` by hand; use `HP2SPH_OMP_THREADS`.
 
@@ -79,7 +79,7 @@ Compare speed by running both configurations alternately in one sitting and taki
 
 Do not set `OMP_NUM_THREADS` or `KMP_DUPLICATE_LIB_OK` by hand.
 `benchmarks/common.py` imports `src._bootstrap` before any numerical library loads, which sets both.
-Importing it late lets several OpenMP runtimes come up multithreaded, which crashes or hangs the process rather than merely slowing it; see `src/_openmp.py`.
+Importing it late lets several OpenMP runtimes come up multithreaded, which crashes or hangs the process rather than merely slowing it; see `hp2sph/_openmp.py`.
 
 ## Backends
 
@@ -237,7 +237,7 @@ Both were measured by this suite.
 They are recorded here so the next person does not have to rediscover them.
 
 **The scalar high-`l` advantage is real and grows with nside, reaching 4.4x at nside 1024.**
-Configuration: scenario `cosmology`, median of 4 seeds, `l` from `3*lmax/4` to `7*lmax/8`, which is the band `CLAUDE.md` quotes.
+Configuration: scenario `cosmology`, median of 4 seeds, `l` from `3*lmax/4` to `7*lmax/8`, which is the band the project's headline figure quotes.
 Measured ratio of the healpy ring-weights error to the HP2SPH error:
 
 | nside | 32 | 64 | 128 | 256 | 512 | 1024 |
@@ -245,11 +245,11 @@ Measured ratio of the healpy ring-weights error to the HP2SPH error:
 | ring / HP2SPH | 1.97 | 2.01 | 2.16 | 2.21 | 3.41 | 4.42 |
 | pixel / HP2SPH | 1.84 | 1.62 | 1.36 | 1.07 | 1.47 | 1.64 |
 
-The advantage needs high nside to appear, exactly as `CLAUDE.md` says.
+The advantage needs high nside to appear.
 At nside 1024 it reaches the bottom of the recorded 4x to 12x range.
 The upper end of that range is not reproduced under 4-seed median averaging.
 At nside 1024 over `l` 1536-1792 this suite measures HP2SPH 1.43e-6 against ring weights 6.35e-6.
-`CLAUDE.md` records 2.9e-6 against 3.5e-5 for the same band.
+The previously recorded figures for the same band were 2.9e-6 against 3.5e-5.
 The HP2SPH number here is better than the recorded one and the ring-weights number is 5.5x better, so the discrepancy sits entirely in the baseline rather than in HP2SPH.
 Seed averaging is the most likely cause and has not been confirmed.
 
@@ -265,7 +265,7 @@ At nside 8, `lmax = 16`, `signal_lmax = 32`, the top four multipoles give relati
 At `rtol=1e-10` the same four give `[10.3, 89.6, 57.5, 521]`.
 At `rtol=1e-10` with `maxiter=20000` they give `[143, 1208, 3076, 16263]`.
 The rank-deficient solve is being held together by early stopping.
-`CLAUDE.md` states that the physical output is stable under tolerance even though the raw coefficient vector is not.
+The physical output is recorded as stable under tolerance even though the raw coefficient vector is not.
 That holds for a band-limited sky and does not hold here.
 
 ## Benchmark 3: round trip
@@ -297,7 +297,7 @@ Letting one coefficient dominate every curve would hide what the rest of the ban
 This benchmark suite is why `from_healpy_alm` exists.
 It is the inverse of `to_healpy_alm` and the repository did not have it.
 The scalar inverse pipeline consumes the raw FastTransforms `C` array, not a healpy `alm`, so a coefficients-in round trip needs this direction.
-It now lives in `src/FSHT.py` next to its forward counterpart and is covered by `tests/test_FSHT.py` and `tests/test_pipeline.py`.
+It now lives in `hp2sph/FSHT.py` next to its forward counterpart and is covered by `tests/test_FSHT.py` and `tests/test_pipeline.py`.
 
 It relies on `to_healpy_alm` reading only the odd column of each real-spherical-harmonic pair because the even one is its conjugate.
 That was verified to hold to 2.8e-16 on real pipeline output before the function was relied on.
