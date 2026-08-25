@@ -1,7 +1,7 @@
 # The project environment.
 #
 #   micromamba create -y -f environment.yml
-#   tools/build_fasttransforms.sh --prefix "$HOME/micromamba/envs/hp2sph-omp"
+#   scripts/build_fasttransforms.sh --prefix "$HOME/micromamba/envs/hp2sph-omp"
 #
 # Everything here comes from conda-forge on purpose. The PyPI healpy and finufft
 # wheels each vendor their own copy of libomp, and two OpenMP runtimes in one
