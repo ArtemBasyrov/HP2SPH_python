@@ -609,7 +609,16 @@ ALL_BACKENDS = [
     Ducc0(
         "ducc0-adjoint", "ducc0 (adjoint synthesis)", kind="single-pass", mode="adjoint"
     ),
-    Ducc0("ducc0-pseudo", "ducc0 (pseudo analysis)", kind="iterative", mode="pseudo"),
+    Ducc0(
+        "ducc0-pseudo",
+        "ducc0 (pseudo analysis)",
+        kind="iterative",
+        mode="pseudo",
+        # LSMR stops on this relative tolerance, not on maxiter -- at 1e-6 it quits
+        # after 2-5 iterations and lands at healpy iter=3's level, which understates
+        # it by ~4.5 orders. See research_notes/benchmarks.md.
+        epsilon=1e-10,
+    ),
 ]
 
 BACKENDS = {b.key: b for b in ALL_BACKENDS}

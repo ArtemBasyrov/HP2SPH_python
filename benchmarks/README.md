@@ -116,7 +116,7 @@ Its latitude Vandermonde has condition number about 6e15 by nside 128, which is 
 ## Benchmark 1: speed
 
 `bench_speed.py` times forward and backward transforms against nside.
-Every backend gets the same map, the same band `lmax = 2*nside`, one thread, and float64.
+Every backend gets the same map, the same band (`lmax = 2*nside` for `I`, `2*nside - 1` for `P`), one thread, and float64.
 
 One warm-up call is discarded, then `--repeats` calls are timed and the minimum is reported.
 The warm-up excludes one-off setup for every backend: FFTW plans, the FastTransforms rotation precompute, JAX tracing, and first-touch page faults.
@@ -182,6 +182,12 @@ The resulting error is dominated by grid aliasing common to every method, so it 
 It is the regime in which the spin-2 defect below shows up.
 
 In every regime `m` is capped at `2*nside-1` so `alm2map` stays an exact sampler of the function and the truth stays well defined.
+
+For channel `I` that cap sits below `lmax = 2*nside`.
+For channel `P` the band is `lmax = 2*nside - 1`, so the cap coincides with `lmax` and restricts nothing -- the same convention the round trip uses, for the same reason (see `--include-nyquist-corner` below).
+This matters more than it looks. Scoring `P` at the full `2*nside` puts the `l = m = lmax` grid-Nyquist column inside the band, where HP2SPH returns gain 0.5 and healpy returns 1.0, and that single column dominates the top-band RMS: at nside 64 it moves HP2SPH's `C_l^EE` error from 1.8e-5 to 1.3e-3 while leaving healpy pixel weights at 2.5e-4, i.e. it reverses a 14x advantage into a 5x deficit.
+Keeping `lmax = 2*nside` and capping `m` below it would hide that column instead, which is a thumb on the scale.
+Stopping the band one degree short states the limit openly and measures the corner separately.
 
 Polarization adds a third measurement, `leakage`.
 A pure-E sky goes in and the recovered `C_l^BB / C_l^EE` comes out, then the same with a pure-B sky.

@@ -149,8 +149,13 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
             "channel": channel,
             "seeds": seeds,
             "threads": applied,
-            "lmax_rule": "2*nside",
-            "mmax_cap_rule": "2*nside-1 (keeps alm2map an exact sampler)",
+            "lmax_rule": "I: 2*nside; P: 2*nside-1",
+            "mmax_cap_rule": (
+                "2*nside-1. For I this caps m below lmax, keeping alm2map an exact "
+                "sampler. For P it EQUALS lmax, so nothing is capped: the |m|=2*nside "
+                "grid-Nyquist column simply falls outside the analysis band, which is "
+                "the band HP2SPH claims to support."
+            ),
             "note": "per-l curves are the median across seeds",
         }
     )
@@ -158,14 +163,22 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
     fields = ["T"] if channel == "I" else ["E", "B"]
 
     for nside in nsides:
-        lmax = 2 * nside
+        # P stops one degree short: at lmax = 2*nside the l = m = lmax column is the
+        # longitude Nyquist of the 4*nside grid, which HP2SPH recovers at gain 0.5 and
+        # healpy at gain 1.0. Scoring it there required capping mmax below lmax to keep
+        # the cell out of the signal -- a thumb on the scale. At lmax = 2*nside-1 the
+        # cap coincides with lmax, so the band is honest and nothing is removed.
+        lmax = 2 * nside if channel == "I" else 2 * nside - 1
         bands = ell_bands(lmax, lmin=lmin)
 
         for scenario in scenarios:
             if scenario not in SCENARIOS:  # "leakage" is handled separately below
                 continue
             mult, slope = SCENARIOS[scenario]
-            signal_lmax = mult * nside
+            # SCENARIOS states the multiplier against nside, which assumed lmax=2*nside;
+            # expressed against lmax it is 1x (band limited) or 2x (above band), and that
+            # form stays correct now that P's lmax is 2*nside-1.
+            signal_lmax = (mult // 2) * lmax
             todo = [
                 b
                 for b in chosen
