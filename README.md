@@ -79,7 +79,7 @@ Polarization `C_l^EE`, the most accurate single-pass method at every nside measu
 | 128 | **4.33e-6** | 8.20e-5 | 1.25e-4 | 5.04e-9 |
 | 256 | **1.55e-6** | 2.50e-5 | 4.47e-5 | 2.37e-9 |
 
-E→B leakage, median leaked `C_l^BB` from a pure `E` input — the strongest result, improving with resolution:
+E→B leakage, median leaked `C_l^BB` from a pure `E` input, improving with resolution:
 
 | nside | HP2SPH | healpy pixel | healpy ring |
 |---|---|---|---|
