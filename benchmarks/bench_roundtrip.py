@@ -115,7 +115,7 @@ def run(channel, nsides, keys, seeds, modes, out_path, resume, nyquist_corner):
         print(f"\n=== {channel} nside={nside} lmax={lmax} ===", flush=True)
 
         for backend in chosen:
-            ok, why = backend.available_at(nside, channel)
+            ok, why = backend.available_at(nside, channel, lmax)
             if not ok:
                 print(f"  {backend.key:<16} skipped: {why}")
                 continue
@@ -298,7 +298,7 @@ def _do_nyquist_corner(store, chosen, channel, nside):
     i = hp.Alm.getidx(lmax, lmax, lmax)
     print(f"  -- l=m={lmax} grid-Nyquist corner --")
     for backend in chosen:
-        if not backend.available_at(nside, channel)[0]:
+        if not backend.available_at(nside, channel, lmax)[0]:
             continue
         try:
             if channel == "I":

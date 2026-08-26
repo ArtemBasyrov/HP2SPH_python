@@ -80,6 +80,7 @@ from benchmarks.common import (
     random_EB,
     random_alm,
     restrict_to_band,
+    per_ell_dl_abs_error,
 )
 
 # Both ladders reach nside 2048, but the cost is 4 scenarios x len(seeds) transforms per
@@ -182,7 +183,7 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
             todo = [
                 b
                 for b in chosen
-                if b.available_at(nside, channel)[0]
+                if b.available_at(nside, channel, lmax)[0]
                 and not (
                     resume
                     and all(
@@ -208,7 +209,7 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
 
             # accumulate per-seed curves, then reduce
             acc = {
-                (b.key, f): {"cl": [], "alm": [], "l2": []}
+                (b.key, f): {"cl": [], "alm": [], "dl": [], "l2": []}
                 for b in todo
                 for f in fields
             }
@@ -225,6 +226,7 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
                     for f in fields:
                         a = acc[(backend.key, f)]
                         a["cl"].append(per_ell_cl_error(rec[f], truth[f], lmax))
+                        a["dl"].append(per_ell_dl_abs_error(rec[f], truth[f], lmax))
                         a["alm"].append(per_ell_alm_error(rec[f], truth[f], lmax))
                         a["l2"].append(
                             {
@@ -242,12 +244,16 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
                         continue
                     cl = np.nanmedian(np.vstack(a["cl"]), axis=0)
                     alm = np.nanmedian(np.vstack(a["alm"]), axis=0)
+                    dl = np.nanmedian(np.vstack(a["dl"]), axis=0)
                     band_summary = {
                         lbl: {
                             "lo": lo,
                             "hi": hi,
                             "cl_rms": band_rms(cl, lo, hi),
                             "alm_rms": band_rms(alm, lo, hi),
+                            # Drake & Wright's metric. Median, not RMS: the per-l
+                            # error spans orders of magnitude at fixed l.
+                            "dl_abs_median": float(np.nanmedian(dl[lo : hi + 1])),
                             "l2": float(np.nanmedian([d[lbl] for d in a["l2"]])),
                         }
                         for lbl, lo, hi in bands
@@ -264,6 +270,7 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
                             "slope": slope,
                             "lmin": lmin,
                             "cl_err_per_ell": cl,
+                            "dl_abs_per_ell": dl,
                             "alm_err_per_ell": alm,
                             "bands": band_summary,
                         }
@@ -285,7 +292,7 @@ def _run_leakage(store, chosen, nside, lmax, seeds, bands, resume):
     print(f"\n=== P nside={nside} scenario=leakage ===", flush=True)
     for pure, field in (("E", "B_from_E"), ("B", "E_from_B")):
         for backend in chosen:
-            if not backend.available_at(nside, "P")[0]:
+            if not backend.available_at(nside, "P", lmax)[0]:
                 continue
             if resume and store.has(
                 channel="P",

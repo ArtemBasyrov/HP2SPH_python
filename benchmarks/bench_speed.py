@@ -101,7 +101,7 @@ def run(channel, nsides, keys, repeats, warmup, out_path, resume, stages, thread
         print(f"\n=== {channel} channel, nside={nside} (lmax={lmax}) ===", flush=True)
 
         for backend in chosen:
-            ok, why = backend.available_at(nside, channel)
+            ok, why = backend.available_at(nside, channel, lmax)
             if not ok:
                 print(f"  {backend.key:<16} skipped: {why}")
                 continue

@@ -99,7 +99,7 @@ class Backend:
     max_nside_I = None
     max_nside_P = None
 
-    def available_at(self, nside, channel):
+    def available_at(self, nside, channel, lmax=None):
         cap = self.max_nside_I if channel == "I" else self.max_nside_P
         if cap is not None and nside > cap:
             return False, f"capped at nside {cap}"
@@ -139,10 +139,10 @@ class HP2SPH(Backend):
         self.max_nside_P = max_nside
         self.channels = channels
 
-    def available_at(self, nside, channel):
+    def available_at(self, nside, channel, lmax=None):
         if channel not in self.channels:
             return False, f"{self.key} has no distinct {channel}-channel configuration"
-        return super().available_at(nside, channel)
+        return super().available_at(nside, channel, lmax)
 
     def forward_I(self, mp, nside, lmax):
         with quiet():
@@ -416,8 +416,8 @@ class Healpy(Backend):
         self.use_pixel_weights = use_pixel_weights
         self.spin_route = spin_route
 
-    def available_at(self, nside, channel):
-        ok, why = super().available_at(nside, channel)
+    def available_at(self, nside, channel, lmax=None):
+        ok, why = super().available_at(nside, channel, lmax)
         if not ok:
             return ok, why
         if self.use_pixel_weights and not pixel_weights_available(nside):

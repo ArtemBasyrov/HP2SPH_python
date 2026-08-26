@@ -207,10 +207,15 @@ def restrict_to_band(alm_full, lmax_full, lmax_band):
 # Metrics                                                                      #
 # --------------------------------------------------------------------------- #
 def per_ell_cl_error(alm_rec, alm_true, lmax):
-    """Relative error of the angular power spectrum -- Drake & Wright's metric.
+    """RELATIVE error of the angular power spectrum at each ``l``.
 
     Blind to coefficient phase, so it is the *forgiving* of the two metrics;
     reported alongside the alm error rather than instead of it.
+
+    This is NOT the metric Drake & Wright use -- theirs is the absolute error of
+    the scaled spectrum, ``per_ell_dl_abs_error`` below. Relative error is the
+    stricter of the two at high ``l``, where ``C_l`` is small, so the two do not
+    rank methods the same way.
     """
     cl_rec = hp.alm2cl(alm_rec, lmax=lmax)
     cl_true = hp.alm2cl(alm_true, lmax=lmax)
@@ -218,6 +223,24 @@ def per_ell_cl_error(alm_rec, alm_true, lmax):
         err = np.abs(cl_rec - cl_true) / cl_true
     err[~np.isfinite(err)] = np.nan
     return err
+
+
+def per_ell_dl_abs_error(alm_rec, alm_true, lmax):
+    """ABSOLUTE error of the scaled spectrum ``l(l+1)C_l`` -- Drake & Wright's metric.
+
+    Their Figure 8(b) plots exactly this against degree ``l``: the scaled spectrum
+    is ``l(l+1)C_l`` (their Figure 8(a) y-axis; no ``2*pi``), and the error is the
+    unnormalised difference from the exact spectrum.
+
+    Summarise it with a MEDIAN, not a mean or a max. The per-``l`` error is spread
+    over several orders of magnitude at fixed ``l`` for every method -- the paper's
+    own figure is a scatter cloud, which is why it quotes no single number -- and a
+    max- or RMS-based statistic reports the tail rather than the typical error.
+    """
+    cl_rec = hp.alm2cl(alm_rec, lmax=lmax)
+    cl_true = hp.alm2cl(alm_true, lmax=lmax)
+    ell = np.arange(lmax + 1)
+    return np.abs(cl_rec - cl_true) * ell * (ell + 1)
 
 
 def per_ell_alm_error(alm_rec, alm_true, lmax):
