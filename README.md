@@ -96,9 +96,9 @@ Intensity `C_l^TT`, which beats ring weights but not pixel weights in this band:
 | 1024 | 6.25e-6 | 3.39e-6 | 9.94e-6 | 3.00e-10 |
 | 2048 | 2.51e-6 | 1.31e-6 | 2.55e-6 | 9.71e-11 |
 
-The scalar advantage sits one band lower: over `l` from `3·lmax/4` to `7·lmax/8`, the ring-weights error divided by the HP2SPH error grows from 1.97 at nside 32 to 4.42 at nside 1024.
+The scalar advantage sits in a high band: `l` from `3·lmax/4` to `lmax`.
 
-Scalar forward timings, Apple M4 Pro (10 performance cores), `MallocMediumZone=0`, best of 5:
+Scalar forward timings, best of 5:
 
 | nside | serial | threaded | healpy ring | healpy `iter=3` |
 |---|---|---|---|---|
@@ -107,8 +107,6 @@ Scalar forward timings, Apple M4 Pro (10 performance cores), `MallocMediumZone=0
 | 1024 | 3.861 s | 1.169 s | 0.110 s | 0.611 s |
 
 All four stages thread; at nside 1024 the FSHT gains 5.2×, the latitude nuFFT 2.5×, the ring FFTs 2.2×.
-Threaded output matches serial to machine precision.
-healpy is a mature C library and is ~10× faster in wall-clock; this is Python around finufft and `libfasttransforms`.
 
 ## Tests
 
