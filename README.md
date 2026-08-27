@@ -66,47 +66,56 @@ The `l = m = 2·nside` coefficient is the longitude Nyquist and cannot be repres
 
 ## Benchmarks
 
-RMS relative `C_l` error over the top quarter of the band, `cosmology` scenario, `lmax = 2·nside`, median of seeds 0–3.
+Drake & Wright's metric: absolute error of the scaled spectrum `l(l+1)C_l`, median over the band, `cosmology` scenario, median of seeds 0–3.
+The band is `lmax = 2·nside` for intensity and `2·nside − 1` for polarization.
 From `benchmarks/results/` (tracked in git); [`benchmarks/README.md`](benchmarks/README.md) states how each competitor is configured.
 `healpy iter=3` is an iterative least squares and a near-exact inverse of `alm2map` by construction — the other columns, like HP2SPH, are single-pass quadrature.
+`ducc0 adjoint` is `adjoint_synthesis` applied with no quadrature weights, and `ducc0 pseudo` is `pseudo_analysis` at `epsilon=1e-10`.
+`ducc0 adjoint` is equivalent to healpy with equal weights.
 
-Polarization `C_l^EE`, the most accurate single-pass method at every nside measured:
+**†** healpy pixel weights are exact quadrature only below `l = 1.5·nside`, so their column is summarised over **that window alone** — the regime they are designed for — while every other column covers the full band.
 
-| nside | HP2SPH | healpy pixel | healpy ring | healpy `iter=3` |
-|---|---|---|---|---|
-| 32 | **3.28e-5** | 5.71e-4 | 6.97e-4 | 5.30e-8 |
-| 64 | **1.43e-5** | 2.19e-4 | 2.89e-4 | 1.47e-8 |
-| 128 | **4.33e-6** | 8.20e-5 | 1.25e-4 | 5.04e-9 |
-| 256 | **1.55e-6** | 2.50e-5 | 4.47e-5 | 2.37e-9 |
+Polarization `C_l^EE`:
 
-E→B leakage, median leaked `C_l^BB` from a pure `E` input, improving with resolution:
+| nside | HP2SPH | healpy pixel † | healpy ring | ducc0 adjoint | healpy `iter=3` | ducc0 pseudo |
+|---|---|---|---|---|---|---|
+| 32 | 3.82e-7 | 2.73e-16 | 4.57e-6 | 6.03e-5 | 1.01e-7 | 7.40e-13 |
+| 64 | 8.22e-8 | 2.54e-16 | 9.83e-7 | 1.34e-5 | 2.44e-8 | 1.47e-13 |
+| 128 | 1.61e-8 | 2.37e-16 | 1.85e-7 | 4.04e-6 | 7.29e-9 | 4.32e-14 |
+| 256 | 2.66e-9 | 2.26e-16 | 3.67e-8 | 8.42e-7 | 1.47e-9 | 5.78e-14 |
+| 512 | 4.71e-10 | 4.71e-16 | 6.19e-9 | 1.85e-7 | 3.20e-10 | 9.09e-15 |
+| 1024 | 7.40e-11 | 8.11e-16 | 1.40e-9 | 5.92e-8 | 1.03e-10 | 2.39e-15 |
+| 2048 | 1.37e-11 | 1.22e-16 | 2.46e-10 | 9.38e-9 | 1.65e-11 | 2.09e-14 |
 
-| nside | HP2SPH | healpy pixel | healpy ring |
-|---|---|---|---|
-| 64 | **3.64e-9** | 2.33e-6 | 4.23e-6 |
-| 128 | **8.53e-10** | 4.09e-7 | 1.10e-6 |
-| 256 | **2.94e-10** | 1.10e-7 | 4.05e-7 |
+E→B leakage, median recovered `C_l^BB / C_l^EE` from a pure `E` input.
 
-Intensity `C_l^TT`, which beats ring weights but not pixel weights in this band:
+| nside | HP2SPH | healpy pixel † | healpy ring | ducc0 adjoint | healpy `iter=3` | ducc0 pseudo |
+|---|---|---|---|---|---|---|
+| 32 | 9.86e-10 | 8.79e-29 | 7.37e-8 | 5.20e-6 | 8.73e-11 | 1.91e-21 |
+| 64 | 2.41e-10 | 4.69e-28 | 4.12e-8 | 9.56e-6 | 2.56e-11 | 4.63e-22 |
+| 128 | 7.37e-11 | 2.23e-27 | 8.87e-9 | 3.46e-6 | 1.65e-11 | 1.08e-20 |
+| 256 | 1.47e-11 | 2.97e-26 | 2.75e-9 | 8.95e-7 | 1.15e-12 | 9.03e-21 |
+| 512 | 4.87e-12 | 1.76e-24 | 9.36e-10 | 7.54e-7 | 1.64e-12 | 1.84e-21 |
+| 1024 | 1.12e-12 | 1.26e-23 | 2.80e-10 | 3.39e-7 | 8.20e-13 | 1.34e-21 |
+| 2048 | 2.23e-13 | 3.80e-24 | 1.48e-10 | 2.72e-7 | 4.91e-13 | 3.65e-19 |
 
-| nside | HP2SPH | healpy pixel | healpy ring | healpy `iter=3` |
-|---|---|---|---|---|
-| 256 | 5.05e-5 | 2.51e-5 | 5.39e-5 | 2.74e-9 |
-| 512 | 1.72e-5 | 9.91e-6 | 2.24e-5 | 7.70e-10 |
-| 1024 | 6.25e-6 | 3.39e-6 | 9.94e-6 | 3.00e-10 |
-| 2048 | 2.51e-6 | 1.31e-6 | 2.55e-6 | 9.71e-11 |
+Intensity `C_l^TT`:
 
-The scalar advantage sits in a high band: `l` from `3·lmax/4` to `lmax`.
+| nside | HP2SPH | healpy pixel † | healpy ring | ducc0 adjoint | healpy `iter=3` | ducc0 pseudo |
+|---|---|---|---|---|---|---|
+| 256 | 2.47e-8 | 2.97e-16 | 3.65e-8 | 4.93e-7 | 8.12e-10 | 9.74e-14 |
+| 512 | 3.96e-9 | 5.31e-16 | 6.13e-9 | 1.12e-7 | 1.86e-10 | 2.53e-14 |
+| 1024 | 6.40e-10 | 7.04e-16 | 1.22e-9 | 2.74e-8 | 4.74e-11 | 3.58e-14 |
+| 2048 | 1.05e-10 | 2.13e-16 | 2.56e-10 | 6.90e-9 | 1.22e-11 | 2.53e-14 |
 
-Scalar forward timings, best of 5:
+Scalar forward timings, 8 threads for every backend, min of 3 timed calls after a warm-up.
 
-| nside | serial | threaded | healpy ring | healpy `iter=3` |
-|---|---|---|---|---|
-| 256 | 0.148 s | 0.067 s | 0.003 s | 0.019 s |
-| 512 | 0.711 s | 0.277 s | 0.017 s | 0.096 s |
-| 1024 | 3.861 s | 1.169 s | 0.110 s | 0.611 s |
-
-All four stages thread; at nside 1024 the FSHT gains 5.2×, the latitude nuFFT 2.5×, the ring FFTs 2.2×.
+| nside | HP2SPH | healpy pixel † | healpy ring | ducc0 adjoint | healpy `iter=3` | ducc0 pseudo |
+|---|---|---|---|---|---|---|
+| 256 | 0.066 s | 0.005 s | 0.004 s | 0.012 s | 0.021 s | 0.183 s |
+| 512 | 0.290 s | 0.024 s | 0.021 s | 0.076 s | 0.120 s | 1.006 s |
+| 1024 | 1.322 s | 0.149 s | 0.138 s | 0.508 s | 0.789 s | 6.720 s |
+| 2048 | 6.481 s | 1.016 s | 0.976 s | 3.646 s | 5.847 s | 39.775 s |
 
 ## Tests
 
