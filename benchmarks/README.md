@@ -181,6 +181,13 @@ It is diagnostic only.
 The resulting error is dominated by grid aliasing common to every method, so it separates the methods poorly, and no real analysis runs there.
 It is the regime in which the spin-2 defect below shows up.
 
+**The band summary window is per backend, and healpy pixel weights are the exception.**
+Every backend is summarised over the full band except `healpy-pixel`, which is summarised over `l <= 1.5*nside` only.
+Pixel weights are exact quadrature below that limit and collapse above it -- at nside 2048 they sit at ~1e-16 below and ~1e-9 above -- so a full-band figure would average across a cliff and report neither regime.
+Summarising them where they are valid reports the number they are designed to deliver.
+The consequence is that their column is NOT a like-for-like comparison and no ratio should be taken against it; high-`l` claims are made against ring weights and `adjoint_synthesis`, which carry no such limit.
+`Backend.summary_lmax` implements this and every record stores the window it used.
+
 In every regime `m` is capped at `2*nside-1` so `alm2map` stays an exact sampler of the function and the truth stays well defined.
 
 For channel `I` that cap sits below `lmax = 2*nside`.

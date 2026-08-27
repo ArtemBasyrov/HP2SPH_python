@@ -84,6 +84,13 @@ def set_threads(n):
     }
 
 
+# healpy pixel weights are exact quadrature only below l = 1.5*nside; above it the
+# reconstruction collapses. They are therefore summarised over that window ALONE, so the
+# number quoted is the one they are designed to deliver. Every other backend is summarised
+# over the full band. The two windows differ, which is why the record carries its own.
+PIXEL_WEIGHT_LMAX_FACTOR = 1.5
+
+
 class Backend:
     """One (library, configuration) pair.
 
@@ -104,6 +111,15 @@ class Backend:
         if cap is not None and nside > cap:
             return False, f"capped at nside {cap}"
         return True, None
+
+    def summary_lmax(self, nside, lmax):
+        """Highest ``l`` this backend's band summary should cover.
+
+        Defaults to the full band. A backend valid only to some lower ``l`` returns
+        that instead, so its summary reports the regime it is designed for rather
+        than an average across a cliff.
+        """
+        return lmax
 
     def forward_I(self, mp, nside, lmax):
         raise NotImplementedError
@@ -424,6 +440,11 @@ class Healpy(Backend):
             return False, f"healpy ships no pixel weights for nside {nside}"
         return True, None
 
+    def summary_lmax(self, nside, lmax):
+        if self.use_pixel_weights:
+            return min(lmax, int(PIXEL_WEIGHT_LMAX_FACTOR * nside))
+        return lmax
+
     def _map2alm(self, maps, lmax, pol):
         import warnings
 
@@ -604,7 +625,7 @@ ALL_BACKENDS = [
         "healpy (iter=3, default)",
         kind="iterative",
         iterations=3,
-        use_weights=True,
+        use_weights=False,
     ),
     Ducc0(
         "ducc0-adjoint", "ducc0 (adjoint synthesis)", kind="single-pass", mode="adjoint"

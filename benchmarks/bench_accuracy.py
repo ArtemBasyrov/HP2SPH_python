@@ -271,6 +271,23 @@ def run(channel, nsides, keys, scenarios, seeds, out_path, resume, threads=1):
                             "lmin": lmin,
                             "cl_err_per_ell": cl,
                             "dl_abs_per_ell": dl,
+                            # Drake & Wright summarise nothing -- they plot the
+                            # whole range -- so the band median is the closest
+                            # single number to their figure. The upper limit is
+                            # per backend: healpy pixel weights are exact only
+                            # below l = 1.5*nside and are summarised there alone,
+                            # rather than averaged across the cliff above it. The
+                            # window actually used is stored alongside, because it
+                            # is NOT the same for every row.
+                            "summary_lmax": backend.summary_lmax(nside, lmax),
+                            "dl_abs_median_full": float(
+                                np.nanmedian(
+                                    dl[
+                                        max(lmin, 1) : backend.summary_lmax(nside, lmax)
+                                        + 1
+                                    ]
+                                )
+                            ),
                             "alm_err_per_ell": alm,
                             "bands": band_summary,
                         }
@@ -329,6 +346,11 @@ def _run_leakage(store, chosen, nside, lmax, seeds, bands, resume):
                     "field": field,
                     "lmin": 2,
                     "leak_per_ell": curve,
+                    # Same per-backend window as the spectrum summary above.
+                    "summary_lmax": backend.summary_lmax(nside, lmax),
+                    "leak_median_full": float(
+                        np.nanmedian(curve[2 : backend.summary_lmax(nside, lmax) + 1])
+                    ),
                     "bands": {
                         lbl: {
                             "lo": lo,
