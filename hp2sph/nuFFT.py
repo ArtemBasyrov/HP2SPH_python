@@ -234,6 +234,22 @@ class _BatchPlan:
         return out
 
 
+def _nside_from_lon(n_trans: int) -> int:
+    """nside from the longitude axis of a natural-order DFS array.
+
+    The natural order runs ``m = -2*nside .. +2*nside``, so the axis has
+    ``4*nside + 1`` columns. The older ``4*nside`` numpy-order layout differs by one
+    column and divides to a DIFFERENT nside without any error, which is worth refusing
+    loudly rather than silently solving the wrong problem.
+    """
+    if n_trans % 4 != 1:
+        raise ValueError(
+            f"longitude axis must have 4*nside+1 columns in natural centred order "
+            f"(m = -2*nside .. +2*nside), got {n_trans}"
+        )
+    return (n_trans - 1) // 4
+
+
 def nyquist_discrepancy(mp: np.ndarray) -> float:
     """How badly the longitude grid cannot represent its own Nyquist mode.
 
@@ -256,9 +272,10 @@ def nyquist_discrepancy(mp: np.ndarray) -> float:
 
     Parameters
     ----------
-    mp : ndarray, shape (8*nside, 4*nside)
+    mp : ndarray, shape (8*nside, 4*nside+1)
         The DFS array, in the natural (fftshifted) longitude order that ``DFS``
-        produces, so that column 0 is the Nyquist slot ``m = -2*nside``.
+        produces, so that the Nyquist content is the two end columns
+        ``m = -2*nside`` and ``m = +2*nside``.
 
     Returns
     -------
@@ -275,15 +292,20 @@ def nyquist_discrepancy(mp: np.ndarray) -> float:
     """
     mp = np.asarray(mp)
     n_trans = mp.shape[1]
-    nside = n_trans // 4
+    nside = _nside_from_lon(n_trans)
     w = compute_voronoi_weights_1d(_upsampled_latitudes(nside))
-    v = mp[:, 0]
+    # The natural order carries |m| = 2*nside as TWO columns, one at each end, and the
+    # unfittable content enters the residual through both. Summing their alternating
+    # parts in quadrature is what the residual itself does, so this stays right whatever
+    # the two columns hold -- with the equal halves DFS currently writes it is smaller
+    # than the single-column form by exactly sqrt(2).
+    v = mp[:, [0, -1]]
     belt = np.arange(nside, 3 * nside)
     # half the difference of neighbouring belt rings: the smooth c_- cancels to first
     # order in the ring spacing, the sign-flipped c_+ adds.
     d = 0.5 * (v[belt] - v[belt + 1])
     # factor 2: the DFS doubling carries every ring twice.
-    return float(np.sqrt(2.0 * np.sum(w[belt] * (d.real**2 + d.imag**2))))
+    return float(np.sqrt(2.0 * np.sum(w[belt, None] * (d.real**2 + d.imag**2))))
 
 
 def _fold_ops(fold, n_trans, M_samples):
@@ -1060,7 +1082,7 @@ def apply_nuFFT(
     the same layout as the return value.
     """
     _openmp.pin()  # finufft's OpenMP runtime is one of several; see hp2sph/_openmp.py
-    nside = mp.shape[1] // 4
+    nside = _nside_from_lon(mp.shape[1])
     if half_domain and mp.shape[0] != 4 * nside + 1:
         raise ValueError(
             f"half_domain expects {4 * nside + 1} latitude rows "
@@ -1146,7 +1168,7 @@ def inverse_nuFFT(fft_lat: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     - np.ndarray: Reconstructed signal at non-uniform latitude samples.
     """
     _openmp.pin()  # finufft's OpenMP runtime is one of several; see hp2sph/_openmp.py
-    nside = fft_lat.shape[1] // 4
+    nside = _nside_from_lon(fft_lat.shape[1])
     DFT_upsampled_lat = _upsampled_latitudes(nside)
 
     fft_lat = np.array(fft_lat)

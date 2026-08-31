@@ -26,7 +26,7 @@ def test_nufft_output_shape(nside, healpix_map):
     # i.e. L = lmax = 2*nside for the FSHT.
     assert n_modes == 4 * nside + 1
     assert n_modes % 2 == 1
-    assert fft_lat.shape[1] == 4 * nside
+    assert fft_lat.shape[1] == 4 * nside + 1  # m = -2*nside .. +2*nside
 
     # the square (exact-interpolation) band is the wider one
     sq = apply_nuFFT(dfs, solver="svd", solve_modes=8 * nside + 1)

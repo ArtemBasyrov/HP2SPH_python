@@ -71,7 +71,7 @@ def test_nuFFT_complex_roundtrip(nside, relerr):
     carries genuinely complex (Q + iU) content, not just real I.
     """
     n_samples = 8 * nside
-    n_lon = 4 * nside
+    n_lon = 4 * nside + 1  # the natural DFS order, m = -2*nside .. +2*nside
     rng = np.random.default_rng(55)
     s = rng.standard_normal((n_samples, n_lon)) + 1j * rng.standard_normal(
         (n_samples, n_lon)

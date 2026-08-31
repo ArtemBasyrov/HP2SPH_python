@@ -94,6 +94,11 @@ def ring_alias_target(nside: int) -> (np.ndarray, np.ndarray, np.ndarray):
     * ``resolved[r, j]`` -- whether the ring produces slot ``j`` at all. The Nyquist slot
       ``-npix//2`` counts as produced: under the fold it is a genuine constraint on the
       ``+-npix//2`` sum, not the mis-assignment the zero-padding makes of it.
+
+    This describes the ONE-SIDED Nyquist layout, so a consumer of this plan must call
+    ``transform_healpix_to_grid(..., nyquist_split=False)``. With the split on, each
+    Nyquist family scatters half onto ``-npix//2`` and half onto ``+npix//2`` with two
+    different phases, which the single-target ``(target, phase)`` form cannot express.
     """
     sizes = ring_pixel_counts(nside)
     n_lon = 4 * nside
@@ -205,7 +210,7 @@ def ring_first_longitude(nside: int) -> np.ndarray:
 
 
 def transform_healpix_to_grid(
-    healpix_map: np.ndarray, map_rows: int = None
+    healpix_map: np.ndarray, map_rows: int = None, nyquist_split: bool = True
 ) -> (np.ndarray, np.ndarray):
     start_time = time.time()
     """
@@ -220,6 +225,16 @@ def transform_healpix_to_grid(
             set to ``k``, only the first and last ``k`` rings, stacked into a
             ``(2*k, 4*nside)`` array -- what the pole fill needs and nothing else.
         fft_coeff (ndarray): the per-ring longitude Fourier coefficients.
+
+    ``nyquist_split`` (default True) splits each polar ring's Nyquist coefficient
+    equally between ``m = -npix/2`` and ``m = +npix/2`` instead of assigning all of
+    it to the negative slot. A ring of ``npix`` points cannot tell the two apart, so
+    the one-sided assignment turns a cosine into a complex exponential and injects a
+    spurious sine of the same amplitude; the even split is the assignment consistent
+    with a real map. Set it False when the consumer models the ring aliasing itself
+    (:func:`ring_alias_target` and the fold plans built on it describe the one-sided
+    layout). Either setting round-trips exactly through
+    :func:`transform_grid_to_healpix`, which folds both slots back onto the same bin.
     """
     healpix_map = np.asarray(healpix_map)
     nside = npix2nside(healpix_map.shape[0])
@@ -241,6 +256,19 @@ def transform_healpix_to_grid(
         coeffs_padded = np.zeros(4 * nside, dtype=complex)
         coeffs_padded[:mid] = coeffs[:mid]  # Positive frequencies
         coeffs_padded[-mid:] = coeffs[-mid:]  # Negative frequencies
+
+        # The ring's Nyquist bin measures the SUM of the m = +mid and m = -mid
+        # content: at num_pts samples the two exponentials are the same function.
+        # numpy parks it at index mid, i.e. frequency -mid, so the slice above hands
+        # all of it to m = -mid and leaves m = +mid empty -- which asserts a complex
+        # exponential where the truth is a cosine, and injects a spurious
+        # sin(mid*phi) of equal amplitude. Half in each slot is the assignment
+        # consistent with a real map. This is the whole of the anti-Hermitian part
+        # of the post-NUFFT array on a smooth sky: it drops from ~1e-4 relative to
+        # ~4e-15 at nside 128-512, and buys 1.22-1.34x in the 0.75-0.875 lmax band.
+        if nyquist_split:
+            coeffs_padded[-mid] *= 0.5
+            coeffs_padded[mid] = coeffs_padded[-mid]
 
         # NB: do NOT rescale by num_pts/(4*nside). With norm='forward' the FFT
         # coefficients are already the true longitude Fourier coefficients of the
@@ -374,8 +402,9 @@ def transform_grid_to_healpix(
         # |m| >= num_pts//2 (what this did) throws that content away instead.
         #
         # For a spectrum produced by ``transform_healpix_to_grid`` the two are
-        # bit-identical -- the forward zero-pads, so every folded-in entry is
-        # exactly 0 -- which is why the round trip never noticed. They differ when
+        # bit-identical -- the forward zero-pads, so every folded-in entry is either
+        # exactly 0 or the other half of a split Nyquist bin, which this add.at sums
+        # back -- which is why the round trip never noticed. They differ when
         # the spectrum comes from the SYNTHESIS side (``main.backward`` /
         # ``spin_transform.backward_spin``), where the high-|m| entries carry real
         # signal. For a SPIN field that is the whole ball game: |m| = |spin| is O(1)

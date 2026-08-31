@@ -64,6 +64,9 @@ def forward_C(healpix_map, **nufft_kw):
         and nufft_kw.get("sample_mask") is None
         and nufft_kw.get("fold") is None
     )
+    # The scalar path may opt into the alias fold, whose plan models the one-sided
+    # Nyquist layout; the split has to come off with it. See ring_alias_target.
+    split = nufft_kw.get("fold") is None
     if half:
         # Only the rings the pole fill reads are brought back to map space, and only
         # the mirror-fundamental rows of the DFS are built; the solve restricts to
@@ -71,12 +74,14 @@ def forward_C(healpix_map, **nufft_kw):
         # the largest items in the transform's peak memory.
         nside = npix2nside(np.shape(healpix_map)[0])
         upsampled, fft_coeff = transform_healpix_to_grid(
-            healpix_map, map_rows=pole_stencil_rows(nside)
+            healpix_map, map_rows=pole_stencil_rows(nside), nyquist_split=split
         )
         _, fft_coeff_dfs = DFS(upsampled, fft_coeff, spin=0, half=True)
         fft_lat = apply_nuFFT(fft_coeff_dfs, half_domain=True, **nufft_kw)
     else:
-        upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
+        upsampled, fft_coeff = transform_healpix_to_grid(
+            healpix_map, nyquist_split=split
+        )
         _, fft_coeff_dfs = DFS(upsampled, fft_coeff)
         fft_lat = apply_nuFFT(fft_coeff_dfs, **nufft_kw)
     return FSHT(fft_lat)

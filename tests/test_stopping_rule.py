@@ -84,7 +84,14 @@ def test_stagnation_stop_cuts_the_iteration_count_without_moving_the_answer(nsid
     err, leak = metrics(got)
 
     assert its < its_ref, "the stagnation rule never fired"
-    assert its_ref / its > 4.0, f"only {its_ref / its:.1f}x fewer iterations"
+    # 3.5x, not the 4x this asserted before the longitude axis was widened to carry
+    # both |m| = 2*nside ends. Measured A/B across that change, same machine, same
+    # seeds: the CONVERGED count is untouched (143 at nside 16, 434 at nside 32), but
+    # the stagnation stop fires later -- 29 -> 40 and 40 -> 42 -- because the
+    # unfittable Nyquist content is now spread over two columns instead of one and the
+    # residual plateaus differently. The answer is unchanged, which the two accuracy
+    # assertions below are what actually guard.
+    assert its_ref / its > 3.5, f"only {its_ref / its:.1f}x fewer iterations"
     assert err <= 1.10 * err_ref, f"C_l^EE error {err:.3e} against {err_ref:.3e}"
     assert leak <= 1.10 * leak_ref, f"E->B leakage {leak:.3e} against {leak_ref:.3e}"
 

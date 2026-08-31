@@ -59,7 +59,10 @@ def test_fold_ops_match_the_dense_reference(nside, spin):
     alias family in index order. That is a different summation order for the same sum,
     so the two agree to rounding rather than exactly. Measured at 1 ulp.
     """
-    n_trans, M = 4 * nside, 8 * nside
+    n_trans, M = (
+        4 * nside + 1,
+        8 * nside,
+    )  # natural order carries both |m| = 2*nside ends
     target, phase, _ = dfs_fold_plan(nside, spin, 1e-2)
     fast_a, fast_j = _fold_ops((target, phase), n_trans, M)
     ref_a, ref_j = _reference_fold_ops((target, phase), n_trans, M)
@@ -80,7 +83,10 @@ def test_fold_ops_in_place_matches_the_out_of_place_form(nside, spin):
     destination, and writing a gathered source cannot disturb a value still to be read.
     That disjointness is asserted here too, since the in-place form is wrong without it.
     """
-    n_trans, M = 4 * nside, 8 * nside
+    n_trans, M = (
+        4 * nside + 1,
+        8 * nside,
+    )  # natural order carries both |m| = 2*nside ends
     target, phase, _ = dfs_fold_plan(nside, spin, 1e-2)
     moved = target != np.arange(n_trans)[None, :]
     r, c = np.nonzero(moved)
@@ -98,7 +104,10 @@ def test_fold_ops_in_place_matches_the_out_of_place_form(nside, spin):
 
 def test_fold_ops_return_contiguous_solver_layout(nside):
     """The callers' ``np.ascontiguousarray`` must be a no-op, or the copy comes back."""
-    n_trans, M = 4 * nside, 8 * nside
+    n_trans, M = (
+        4 * nside + 1,
+        8 * nside,
+    )  # natural order carries both |m| = 2*nside ends
     target, phase, _ = dfs_fold_plan(nside, 2, 1e-2)
     apply, adjoint = _fold_ops((target, phase), n_trans, M)
     rng = np.random.default_rng(0)
@@ -109,7 +118,10 @@ def test_fold_ops_return_contiguous_solver_layout(nside):
 
 
 def test_fold_ops_are_exact_adjoints(nside):
-    n_trans, M = 4 * nside, 8 * nside
+    n_trans, M = (
+        4 * nside + 1,
+        8 * nside,
+    )  # natural order carries both |m| = 2*nside ends
     target, phase, _ = dfs_fold_plan(nside, 2, 1e-2)
     apply, adjoint = _fold_ops((target, phase), n_trans, M)
     rng = np.random.default_rng(1)
@@ -126,7 +138,7 @@ def test_fold_ops_are_exact_adjoints(nside):
 @pytest.mark.parametrize("spin", [0, 2])
 def test_mirror_plan_halves_the_rows(nside, spin):
     x = _upsampled_latitudes(nside)
-    plan = _mirror_plan(x, spin, 4 * nside, 4 * nside + 1)
+    plan = _mirror_plan(x, spin, 4 * nside + 1, 4 * nside + 1)
     assert plan is not None
     mu, rows, mult, parity, scale, even = plan
     # the two poles are the fixed points, everything else pairs up
@@ -147,18 +159,20 @@ def test_mirror_plan_embedding_is_an_isometry(nside):
     Without this the half operator has a different spectrum from the full one on the
     symmetric subspace and CG needs more iterations, not fewer.
     """
-    plan = _mirror_plan(_upsampled_latitudes(nside), 2, 4 * nside, 4 * nside + 1)
+    plan = _mirror_plan(_upsampled_latitudes(nside), 2, 4 * nside + 1, 4 * nside + 1)
     _, _, _, parity, scale, even = plan
     assert scale[0] == 1.0
     assert np.allclose(scale[1:], 1.0 / np.sqrt(2.0))
     # c_{-k} = -c_k forces c_0 = 0 on the odd-parity columns
     assert np.array_equal(even, (parity > 0).astype(float))
-    assert even.sum() == len(even) // 2
+    # The longitude axis runs m = -2*nside .. +2*nside, an ODD number of columns whose
+    # two ends are both even m, so the even class outnumbers the odd one by exactly one.
+    assert even.sum() == (len(even) + 1) // 2
 
 
 def test_mirror_plan_declines_without_a_spin(nside):
     x = _upsampled_latitudes(nside)
-    assert _mirror_plan(x, None, 4 * nside, 4 * nside + 1) is None
+    assert _mirror_plan(x, None, 4 * nside + 1, 4 * nside + 1) is None
 
 
 # --- the half solve ---------------------------------------------------------------
@@ -168,7 +182,7 @@ def test_mirror_plan_declines_without_a_spin(nside):
 def test_dfs_array_is_mirror_symmetric(nside, healpix_map, spin):
     dfs = _dfs(healpix_map, spin)
     x = _upsampled_latitudes(nside)
-    mu, _, _, parity, _, _ = _mirror_plan(x, spin, 4 * nside, 4 * nside + 1)
+    mu, _, _, parity, _, _ = _mirror_plan(x, spin, 4 * nside + 1, 4 * nside + 1)
     assert _is_mirror_symmetric(np.asarray(dfs).T, mu, parity)
 
 
@@ -194,7 +208,7 @@ def test_asymmetric_input_falls_back_to_the_full_domain(nside, healpix_map):
     """A bare array need not be a DFS array, so the symmetry is checked, not assumed."""
     dfs = np.asarray(_dfs(healpix_map)).copy()
     x = _upsampled_latitudes(nside)
-    mu, _, _, parity, _, _ = _mirror_plan(x, 0, 4 * nside, 4 * nside + 1)
+    mu, _, _, parity, _, _ = _mirror_plan(x, 0, 4 * nside + 1, 4 * nside + 1)
     dfs[3, 5] += 10.0 * np.abs(dfs).max()  # break the symmetry
     assert not _is_mirror_symmetric(dfs.T, mu, parity)
     # the solve still runs, on the full domain, and matches the full-domain answer
@@ -222,7 +236,7 @@ def test_half_dfs_matches_the_first_half_of_the_full_one(nside, spin):
     full_map, full_fft = DFS(upsampled, fft_coeff, spin=spin)
     half_map, half_fft = DFS(upsampled, fft_coeff, spin=spin, half=True)
     n = 4 * nside + 1
-    assert half_fft.shape == (n, 4 * nside)
+    assert half_fft.shape == (n, 4 * nside + 1)
     assert np.array_equal(full_fft[:n], half_fft)
     assert half_map is None, "the map half is not built; no caller uses it"
     assert full_map.shape[0] == 8 * nside

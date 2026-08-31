@@ -68,7 +68,9 @@ def test_alias_model_reproduces_the_measured_ring_spectrum(nside):
     _, bivar = inverse_FSHT_spin(F, nside, +SPIN)
     exact = np.asarray(inverse_nuFFT(np.asarray(bivar)))
 
-    _, fft_coeff = transform_healpix_to_grid(Q + 1j * U)
+    # nyquist_split=False: this test pins the fold MODEL, and ring_alias_target
+    # describes the one-sided Nyquist layout the fold plans are built from.
+    _, fft_coeff = transform_healpix_to_grid(Q + 1j * U, nyquist_split=False)
     _, measured = DFS(
         np.fft.ifft(fft_coeff, axis=-1, norm="forward"), fft_coeff, spin=+SPIN
     )
@@ -106,7 +108,7 @@ def test_fold_targets_are_the_ring_residues(nside):
 
 def test_fold_operator_is_a_true_adjoint(nside):
     """LSMR and CG are only valid if ``apply``/``adjoint`` really are adjoint."""
-    n_lon = 4 * nside
+    n_lon = 4 * nside + 1  # natural order carries both |m| = 2*nside ends
     M = 8 * nside
     target, phase, _ = dfs_fold_plan(nside, +SPIN, tol=1e-2)
     apply, adjoint = _fold_ops((target, phase), n_lon, M)
@@ -139,7 +141,11 @@ def test_envelope_bounds_the_true_latitude_profile(nside):
         )
         _, bivar = inverse_FSHT_spin(F, nside, +SPIN)
         exact = np.asarray(inverse_nuFFT(np.asarray(bivar)))
+        # The envelope is built on the 4*nside fold layout; DFS carries one column
+        # more. It depends only on |m|, so the extra m = +2*nside column has the same
+        # envelope as the m = -2*nside one already at index 0.
         rho = mode_pole_envelope(nside, +SPIN)
+        rho = np.concatenate((rho, rho[:, :1]), axis=1)
         n_rings = 4 * nside - 1
         rings = exact[1 : n_rings + 1]
         peak = np.abs(rings).max(axis=0)

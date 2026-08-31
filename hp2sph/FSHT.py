@@ -33,13 +33,13 @@ def _fill_columns(out, X, L, cosine, c_m):
 
 
 def preparation(bivar_coeffs: np.ndarray, spin: int = 0) -> np.ndarray:
-    # bivar_coeffs: (2*L+1 latitude modes [centered], 4*NSIDE longitude [natural
-    # centered order m = -2*NSIDE .. 2*NSIDE-1]). The internal latitude band
+    # bivar_coeffs: (2*L+1 latitude modes [centered], 4*NSIDE+1 longitude [natural
+    # centered order m = -2*NSIDE .. +2*NSIDE]). The internal latitude band
     # limit L is set by the number of latitude modes the nuFFT solved for, which
     # is decoupled from (and larger than) the longitude resolution. Longitude
     # only supports |m| <= 2*NSIDE, so the longitude axis is zero-padded out to
     # the 2*L+1 columns the Fourier->spherical-harmonic step expects.
-    NSIDE = bivar_coeffs.shape[1] // 4
+    NSIDE = (bivar_coeffs.shape[1] - 1) // 4
     L = (bivar_coeffs.shape[0] - 1) // 2  # internal latitude band limit
     J = 2 * NSIDE  # largest |m| the longitude grid carries
     if L < J:
@@ -91,14 +91,15 @@ def preparation(bivar_coeffs: np.ndarray, spin: int = 0) -> np.ndarray:
             c_m,
         )
 
-    # |m| = 2*NSIDE is the longitude grid's Nyquist: +m and -m are the same sampled
-    # mode, so the single stored column is split half onto each end. This is where the
-    # documented l = m = 2*nside half gain comes from. Halve first and then sum, which
-    # is the order the columns were formed in before.
-    half = 0.5 * bivar_coeffs[:, 0]
+    # |m| = 2*NSIDE, the longitude grid's Nyquist, now arrives as its own two columns:
+    # DFS splits the single sampled slot half onto each end (see
+    # ``double_fourier_sphere._shifted_into``), so this reads them instead of splitting
+    # here. Numerically identical while both halves are equal, which is what makes the
+    # documented l = m = 2*nside half gain unchanged; the point is that the split is now
+    # stated once, in the stage that knows what the ring measured.
     _fill_columns(
         g[:, 2 * J - 1 : 2 * J + 1],
-        np.stack((half, half), axis=1),
+        np.stack((bivar_coeffs[:, 0], bivar_coeffs[:, 2 * J]), axis=1),
         L,
         (J + spin) % 2 == 0,
         c_m,
@@ -241,7 +242,7 @@ def convert_to_bivar_coeffs(g: np.ndarray, nside: int, spin: int = 0) -> np.ndar
     #
     # Inverse of preparation(): g has shape (L+1, 2*L+1) where L is the internal
     # latitude band limit (L = g.shape[0]-1). The longitude axis is built at the
-    # full 2*L+1 width and then de-expanded back to the 4*nside columns the rest
+    # full 2*L+1 width and then de-expanded back to the 4*nside+1 columns the rest
     # of the pipeline uses, keeping only |m| <= 2*nside. nside must be passed in
     # because it can no longer be inferred from the (latitude-driven) g width.
     NSIDE = nside
@@ -288,9 +289,11 @@ def convert_to_bivar_coeffs(g: np.ndarray, nside: int, spin: int = 0) -> np.ndar
     X_coeff[:L, :L][:, sel_even] = np.flip(X_pos_ell[1:], axis=0)[:, sel_even]
     X_coeff[:L, :L][:, sel_odd] = -np.flip(X_pos_ell[1:], axis=0)[:, sel_odd]
 
-    # de-expand longitude to the central 4*nside columns (m = -2*nside .. 2*nside-1)
-    bivar_coeff = X_coeff[:, L - 2 * NSIDE : L + 2 * NSIDE].copy()
-    bivar_coeff[:, 0] = 2 * X_coeff[:, L - 2 * NSIDE]  # undo the m=-2*nside split
+    # de-expand longitude to the central 4*nside+1 columns (m = -2*nside .. +2*nside).
+    # Both Nyquist ends are kept, so the doubling that used to fold m = +2*nside back
+    # onto m = -2*nside is gone: DFS_inverse now does that sum, once, on its way back to
+    # the numpy layout that actually has only one slot.
+    bivar_coeff = X_coeff[:, L - 2 * NSIDE : L + 2 * NSIDE + 1].copy()
 
     return bivar_coeff
 

@@ -118,11 +118,26 @@ _MIN_THREADED_RINGS = 511
 
 
 def _shifted_into(dst: np.ndarray, src: np.ndarray) -> None:
-    """Write ``np.fft.fftshift(src, axes=1)`` into ``dst`` with a single copy."""
+    """Write ``np.fft.fftshift(src, axes=1)`` into ``dst``, widening the Nyquist.
+
+    ``src`` is in numpy FFT order with ``n_lon = 4*nside`` columns. That layout has one
+    slot for ``|m| = 2*nside`` and parks the whole content in it as ``m = -2*nside``.
+    ``dst`` has ``n_lon + 1`` columns in natural centred order ``m = -2*nside ..
+    +2*nside``, so both ends exist and the content is split half onto each -- the
+    assignment a real cosine actually has.
+
+    That split is not new to the pipeline, only new to this end of it:
+    ``FSHT.preparation`` has always split the single column on the way in and
+    ``FSHT.convert_to_bivar_coeffs`` doubled it back on the way out. Carrying both
+    columns explicitly lets each of those drop its half of the compensation, and makes
+    the array Hermitian in the one place a real sky says it must be.
+    """
     n_lon = src.shape[1]
     shift = n_lon // 2
     dst[:, :shift] = src[:, n_lon - shift :]
-    dst[:, shift:] = src[:, : n_lon - shift]
+    dst[:, shift:n_lon] = src[:, : n_lon - shift]
+    dst[:, 0] *= 0.5
+    dst[:, n_lon] = dst[:, 0]
 
 
 def DFS(
@@ -146,7 +161,8 @@ def DFS(
         # only the Fourier array, and at nside 1024 the map is another 0.27 GB whose
         # only content beyond the two pole rows is a verbatim copy of ``mp``.
         half_map = None
-        half_fft = np.empty((n_rings + 2, n_lon), dtype=complex)
+        # n_lon + 1 columns: the natural order carries both |m| = 2*nside ends.
+        half_fft = np.empty((n_rings + 2, n_lon + 1), dtype=complex)
         # The fftshift to natural ordering is folded into the copy. Doing it afterwards
         # reads and writes the whole array a second time and holds a second full-size
         # array while it does -- 0.27 GB extra at nside 1024, and the array is the
@@ -200,15 +216,18 @@ def DFS(
     double_fft[:n_rings+2] *= weights[:, np.newaxis]
     double_fft[n_rings+2:] *= np.flip(weights[1:-1])[:, np.newaxis] # flip weights for the mirrored part 
     """
-    # apply FFT shift from numpy ordering to natural ordering
-    double_fft = np.fft.fftshift(double_fft, axes=1)
+    # numpy ordering -> natural ordering, widening the Nyquist column (see
+    # ``_shifted_into``).
+    natural = np.empty((double_fft.shape[0], double_fft.shape[1] + 1), dtype=complex)
+    _shifted_into(natural, double_fft)
 
-    return double_map, double_fft
+    return double_map, natural
 
 
 def DFS_inverse(double_fft: np.ndarray, spin: int = 0) -> np.ndarray:
-    nside = double_fft.shape[1] // 4
+    nside = (double_fft.shape[1] - 1) // 4
     n_rings = 4 * nside - 1
+    n_lon = 4 * nside
 
     # selecting the upper part of the double map without added poles
     fft_coeff = double_fft[1 : n_rings + 1]
@@ -217,8 +236,13 @@ def DFS_inverse(double_fft: np.ndarray, spin: int = 0) -> np.ndarray:
     # weights = compute_ring_area_weights(nside) # both poles + original map
     # fft_coeff /= weights[1:-1][:, np.newaxis]
 
+    # Un-widen: numpy order has a single |m| = 2*nside slot, so the two half-columns
+    # the natural order carries sum back into it. Exact inverse of ``_shifted_into``.
+    narrow = fft_coeff[:, :n_lon].copy()
+    narrow[:, 0] += fft_coeff[:, n_lon]
+
     # apply FFT shift from natural ordering to numpy ordering
-    fft_coeff = np.fft.ifftshift(fft_coeff, axes=1)
+    fft_coeff = np.fft.ifftshift(narrow, axes=1)
 
     return fft_coeff
 
@@ -260,11 +284,32 @@ def dfs_fold_plan(
         np.concatenate((pole_keep[:1], keep, pole_keep[1:])),
     )
     if half:
-        return head
+        return _widen_plan(head, n_lon)
+    return _widen_plan(
+        (
+            np.concatenate((head[0], np.flip(target, axis=0))),
+            np.concatenate((head[1], np.flip(phase, axis=0))),
+            np.concatenate((head[2], np.flip(keep, axis=0))),
+        ),
+        n_lon,
+    )
+
+
+def _widen_plan(plan, n_lon):
+    """Append the ``m = +2*nside`` column ``DFS`` now carries, as a kept identity.
+
+    ``ring_fold_plan`` is built on the ``4*nside``-wide numpy layout. The extra natural-
+    order column is the other half of the longitude Nyquist; no ring aliases ONTO it
+    that is not already accounted for on the ``-2*nside`` end, so here it maps to itself
+    with unit phase and is kept.
+    """
+    target, phase, keep = plan
+    n_rows = target.shape[0]
+    col = np.full((n_rows, 1), n_lon)
     return (
-        np.concatenate((head[0], np.flip(target, axis=0))),
-        np.concatenate((head[1], np.flip(phase, axis=0))),
-        np.concatenate((head[2], np.flip(keep, axis=0))),
+        np.concatenate((target, col), axis=1),
+        np.concatenate((phase, np.ones((n_rows, 1))), axis=1),
+        np.concatenate((keep, np.ones((n_rows, 1), dtype=bool)), axis=1),
     )
 
 
@@ -352,7 +397,9 @@ def dfs_fold_sparse(
         row = 0 if pole_row == 0 else n_rings + 1
         drops.append(bad * n_rows + row)
     drop = np.unique(np.concatenate(drops)).astype(np.intp)
-    return FoldPlan(src, dst, phase, drop, n_lon, n_rows)
+    # n_lon + 1 columns: DFS carries both |m| = 2*nside ends. Nothing is ever relaxed
+    # onto or out of the new one, so only the column count changes.
+    return FoldPlan(src, dst, phase, drop, n_lon + 1, n_rows)
 
 
 def _pole_lagrange_weights(nodes: np.ndarray, x0: float) -> np.ndarray:

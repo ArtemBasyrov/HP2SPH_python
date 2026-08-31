@@ -180,8 +180,11 @@ def _spin_F_hp2sph(
     # Only the rings the pole fill reads are brought back to map space; the inverse
     # FFT over the whole grid is 0.27 GB at nside 1024 and its result is used for
     # twelve rows.
+    # nyquist_split=False: the fold plan below is built from ``ring_alias_target``,
+    # which models the one-sided Nyquist layout. Splitting the bin here would leave the
+    # solver's forward operator describing data it was no longer given.
     upsampled, fft_coeff = transform_healpix_to_grid(
-        z, map_rows=pole_stencil_rows(nside)
+        z, map_rows=pole_stencil_rows(nside), nyquist_split=False
     )
     # Only the mirror-fundamental rows are built: the latitude solve restricts to them
     # anyway, and the mirrored half is the largest single item in the transform's peak

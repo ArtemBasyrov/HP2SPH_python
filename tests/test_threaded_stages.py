@@ -27,13 +27,30 @@ def forced_workers(monkeypatch):
     return apply
 
 
+def _natural_ref(src):
+    """``fftshift`` plus the Nyquist widening ``_shifted_into`` performs.
+
+    Spelled out the long way so the test states the contract instead of restating the
+    implementation: shift to centred order, then carry ``|m| = 2*nside`` as two
+    half-columns, one at each end.
+    """
+    shifted = np.fft.fftshift(src, axes=1)
+    out = np.empty((src.shape[0], src.shape[1] + 1), dtype=complex)
+    out[:, : src.shape[1]] = shifted
+    out[:, 0] *= 0.5
+    out[:, src.shape[1]] = out[:, 0]
+    return out
+
+
 @pytest.mark.parametrize("shape", [(3, 8), (1, 16), (5, 12), (2, 7)])
-def test_shifted_into_matches_fftshift(shape, rng):
-    """The shift folded into the copy is exactly ``fftshift`` along the column axis."""
+def test_shifted_into_widens_the_nyquist_column(shape, rng):
+    """The copy shifts to centred order AND splits the Nyquist onto both ends."""
     src = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    dst = np.empty_like(src)
+    dst = np.empty((shape[0], shape[1] + 1), dtype=complex)
     _shifted_into(dst, src)
-    assert np.array_equal(dst, np.fft.fftshift(src, axes=1))
+    assert np.array_equal(dst, _natural_ref(src))
+    # the two ends together carry exactly what the single numpy-order slot held
+    assert np.allclose(dst[:, 0] + dst[:, -1], np.fft.fftshift(src, axes=1)[:, 0])
 
 
 def test_transform_threaded_matches_serial(nside, healpix_map, forced_workers):
@@ -74,7 +91,7 @@ def test_half_dfs_still_returns_the_shifted_array(nside, healpix_map):
     ref[0] = np.fft.fft(north, n=n_lon, norm="forward")
     ref[1 : n_rings + 1] = fft_coeff
     ref[n_rings + 1] = np.fft.fft(south, n=n_lon, norm="forward")
-    assert np.array_equal(got, np.fft.fftshift(ref, axes=1))
+    assert np.array_equal(got, _natural_ref(ref))
 
 
 # --- the worker-count policy ------------------------------------------------

@@ -17,8 +17,10 @@ def test_dfs_shapes(nside, healpix_map):
     n_rings = 4 * nside - 1
     double_map, double_fft = DFS(upsampled, fft_coeff)
     # the doubled grid adds the mirror plus the two interpolated pole rings
+    # the map keeps 4*nside longitude SAMPLES; the Fourier array carries 4*nside+1
+    # MODES, m = -2*nside .. +2*nside, both Nyquist ends included
     assert double_map.shape == (2 * n_rings + 2, 4 * nside)
-    assert double_fft.shape == (2 * n_rings + 2, 4 * nside)
+    assert double_fft.shape == (2 * n_rings + 2, 4 * nside + 1)
 
 
 def test_dfs_roundtrip_is_exact(nside, healpix_map, relerr):

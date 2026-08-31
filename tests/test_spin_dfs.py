@@ -85,14 +85,21 @@ def test_dfs_south_pole_row_is_the_pole(nside):
     n_rings = fft_coeff.shape[0]
     n_lon = fft_coeff.shape[1]
 
-    pole_row = np.fft.fftshift(
-        np.fft.fft(np.asarray(double_map)[n_rings + 1], n=n_lon, norm="forward")
-    )
+    def natural(row):
+        """One map row -> the natural centred order ``DFS`` returns.
+
+        Both ``|m| = 2*nside`` ends are carried, the sampled slot split half onto each;
+        see ``double_fourier_sphere._shifted_into``.
+        """
+        shifted = np.fft.fftshift(np.fft.fft(row, n=n_lon, norm="forward"))
+        out = np.append(shifted, 0.5 * shifted[0])
+        out[0] *= 0.5
+        return out
+
+    pole_row = natural(np.asarray(double_map)[n_rings + 1])
     np.testing.assert_allclose(double_fft[n_rings + 1], pole_row, atol=1e-14)
     # and it is genuinely different from the last original ring
-    last_ring = np.fft.fftshift(
-        np.fft.fft(np.asarray(double_map)[n_rings], n=n_lon, norm="forward")
-    )
+    last_ring = natural(np.asarray(double_map)[n_rings])
     assert not np.allclose(double_fft[n_rings + 1], last_ring, atol=1e-10)
 
 
