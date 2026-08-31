@@ -82,10 +82,13 @@ def _roundtrip(nside, synthesis_eps=None, **nufft_kw):
     mp = hp.alm2map(alm.astype(np.complex128), nside=nside, lmax=lmax)
 
     ups, fc = transform_healpix_to_grid(mp)
-    _, dfs = DFS(ups, fc)
+    _, dfs = DFS(ups, fc, belt_split=False)
     C = FSHT(apply_nuFFT(np.asarray(dfs), **nufft_kw))
     kw = {} if synthesis_eps is None else {"eps": synthesis_eps}
-    rec = backward_map(C, nside, **kw)
+    # The square band interpolates exactly, so it cannot separate the two
+    # |m| = 2*nside columns and forward_C turns the belt split off. The backward
+    # leg has to be told the same thing. See double_fourier_sphere._finish_nyquist.
+    rec = backward_map(C, nside, belt_split=False, **kw)
     return np.linalg.norm(rec - mp) / np.linalg.norm(mp)
 
 

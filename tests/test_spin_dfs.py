@@ -34,8 +34,12 @@ def test_spin_dfs_complex_roundtrip(nside, spin, relerr):
     """
     z = _complex_field(nside, seed=abs(spin) + 1)
     up, fft_coeff = transform_healpix_to_grid(z)
-    _, double_fft = DFS(up, fft_coeff, spin=spin)
-    recovered = DFS_inverse(double_fft, spin=spin)
+    # belt_split=False: with the split ON, DFS deliberately writes the SAME measured
+    # value into both |m| = 2*nside columns for the latitude fit to separate, so it is
+    # not information-preserving on that one column and DFS_inverse cannot invert it.
+    # See double_fourier_sphere._finish_nyquist.
+    _, double_fft = DFS(up, fft_coeff, spin=spin, belt_split=False)
+    recovered = DFS_inverse(double_fft, spin=spin, belt_split=False)
     assert np.iscomplexobj(np.asarray(recovered))
     assert relerr(np.asarray(recovered), np.asarray(fft_coeff)) < 1e-12
 

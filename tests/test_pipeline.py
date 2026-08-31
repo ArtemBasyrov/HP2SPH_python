@@ -38,7 +38,10 @@ def test_forward_backward_map_roundtrip_exact_mode(nside, healpix_map, relerr):
     """
     kw = dict(solver="svd", solve_modes=8 * nside + 1)
     C = forward_C(healpix_map, **kw)
-    recovered = backward_map(C, nside)
+    # The square band interpolates exactly, so it cannot separate the two
+    # |m| = 2*nside columns and forward_C turns the belt split off. The backward
+    # leg has to be told the same thing. See double_fourier_sphere._finish_nyquist.
+    recovered = backward_map(C, nside, belt_split=False)
     assert relerr(recovered, healpix_map) < 1e-5
 
 
@@ -213,7 +216,7 @@ def test_forward_C_keeps_the_full_domain_for_the_square_band(nside, healpix_map)
 
     kw = dict(solver="svd", solve_modes=8 * nside + 1)
     upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
-    _, dfs = DFS(upsampled, fft_coeff)
+    _, dfs = DFS(upsampled, fft_coeff, belt_split=False)
     full = FSHT(apply_nuFFT(dfs, spin=0, **kw))
 
     assert np.array_equal(forward_C(healpix_map, **kw), full)

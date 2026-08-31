@@ -67,6 +67,11 @@ def forward_C(healpix_map, **nufft_kw):
     # The scalar path may opt into the alias fold, whose plan models the one-sided
     # Nyquist layout; the split has to come off with it. See ring_alias_target.
     split = nufft_kw.get("fold") is None
+    # The belt Nyquist separation relies on the fit being band-limited, so that the
+    # ring-to-ring alternating part falls outside the band. The square band interpolates
+    # exactly and has no such part to drop, so the split double-counts there.
+    # See double_fourier_sphere._finish_nyquist.
+    belt = nufft_kw.get("solver", "cg") == "cg" and nufft_kw.get("solve_modes") is None
     if half:
         # Only the rings the pole fill reads are brought back to map space, and only
         # the mirror-fundamental rows of the DFS are built; the solve restricts to
@@ -76,13 +81,13 @@ def forward_C(healpix_map, **nufft_kw):
         upsampled, fft_coeff = transform_healpix_to_grid(
             healpix_map, map_rows=pole_stencil_rows(nside), nyquist_split=split
         )
-        _, fft_coeff_dfs = DFS(upsampled, fft_coeff, spin=0, half=True)
+        _, fft_coeff_dfs = DFS(upsampled, fft_coeff, spin=0, half=True, belt_split=belt)
         fft_lat = apply_nuFFT(fft_coeff_dfs, half_domain=True, **nufft_kw)
     else:
         upsampled, fft_coeff = transform_healpix_to_grid(
             healpix_map, nyquist_split=split
         )
-        _, fft_coeff_dfs = DFS(upsampled, fft_coeff)
+        _, fft_coeff_dfs = DFS(upsampled, fft_coeff, belt_split=belt)
         fft_lat = apply_nuFFT(fft_coeff_dfs, **nufft_kw)
     return FSHT(fft_lat)
 
@@ -107,11 +112,16 @@ def nside_from_C(C):
     return (np.shape(C)[0] - 1) // 2
 
 
-def backward_map(C, nside=None, eps=SYNTHESIS_EPS):
+def backward_map(C, nside=None, eps=SYNTHESIS_EPS, belt_split=True):
     """Raw ``C`` array -> HEALPix intensity map (inverse pipeline).
 
     ``nside`` defaults to :func:`nside_from_C`, which is right for the compact
     band; pass it explicitly for a ``C`` solved in a wider band.
+
+    ``belt_split`` must match the setting the forward used, because it decides what the
+    two ``|m| = 2*nside`` columns mean: separated ``c_-``/``c_+`` when True, two halves
+    of one measurement when False. ``forward_C`` turns it off for the square band, so a
+    square-band round trip must pass ``belt_split=False`` here too.
 
     ``eps`` is the latitude NUFFT tolerance for the synthesis. Synthesis is a plain
     evaluation, so its error enters the output multiplied by the norm of the
@@ -125,5 +135,5 @@ def backward_map(C, nside=None, eps=SYNTHESIS_EPS):
         nside = nside_from_C(C)
     _, C2 = inverse_FSHT(C, nside)
     fft_lat = inverse_nuFFT(C2, eps=eps)
-    fft_coeff = DFS_inverse(fft_lat)
+    fft_coeff = DFS_inverse(fft_lat, belt_split=belt_split)
     return transform_grid_to_healpix(fft_coeff, fft_coeff)

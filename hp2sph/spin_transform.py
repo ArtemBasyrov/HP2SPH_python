@@ -189,7 +189,9 @@ def _spin_F_hp2sph(
     # Only the mirror-fundamental rows are built: the latitude solve restricts to them
     # anyway, and the mirrored half is the largest single item in the transform's peak
     # memory.
-    _, dfs = DFS(upsampled, fft_coeff, spin=spin, half=True)
+    # belt_split=False: the stagnation stopping rule below is calibrated on the
+    # |m| = 2*nside content sitting unfitted in the residual. See _finish_nyquist.
+    _, dfs = DFS(upsampled, fft_coeff, spin=spin, half=True, belt_split=False)
     # The fold plan is built as flat index arrays rather than as three full-grid
     # arrays; only a few percent of entries say anything, and the dense form is 0.4 GB
     # at nside 1024. It carries its own dropped entries, so no separate sample mask.

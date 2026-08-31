@@ -116,7 +116,9 @@ def test_stagnation_stop_is_inert_on_the_unfolded_scalar_solve():
 def _dfs_of(Q, U, spin=2):
     with contextlib.redirect_stdout(io.StringIO()):
         up, fc = transform_healpix_to_grid(Q + 1j * U)
-        _, dfs = DFS(up, fc, spin=spin)
+        # belt_split=False to match spin_transform._spin_F_hp2sph; the stagnation rule
+        # is calibrated on the unfitted |m| = 2*nside content.
+        _, dfs = DFS(up, fc, spin=spin, belt_split=False)
     return dfs
 
 

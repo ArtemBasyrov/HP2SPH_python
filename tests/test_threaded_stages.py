@@ -31,13 +31,12 @@ def _natural_ref(src):
     """``fftshift`` plus the Nyquist widening ``_shifted_into`` performs.
 
     Spelled out the long way so the test states the contract instead of restating the
-    implementation: shift to centred order, then carry ``|m| = 2*nside`` as two
-    half-columns, one at each end.
+    implementation: shift to centred order, then repeat the ``|m| = 2*nside`` slot at
+    both ends. Deciding what each end HOLDS is ``_finish_nyquist``'s job, not this one's.
     """
     shifted = np.fft.fftshift(src, axes=1)
     out = np.empty((src.shape[0], src.shape[1] + 1), dtype=complex)
     out[:, : src.shape[1]] = shifted
-    out[:, 0] *= 0.5
     out[:, src.shape[1]] = out[:, 0]
     return out
 
@@ -49,8 +48,9 @@ def test_shifted_into_widens_the_nyquist_column(shape, rng):
     dst = np.empty((shape[0], shape[1] + 1), dtype=complex)
     _shifted_into(dst, src)
     assert np.array_equal(dst, _natural_ref(src))
-    # the two ends together carry exactly what the single numpy-order slot held
-    assert np.allclose(dst[:, 0] + dst[:, -1], np.fft.fftshift(src, axes=1)[:, 0])
+    # both ends carry the measured slot; _finish_nyquist decides what each one means
+    assert np.allclose(dst[:, 0], np.fft.fftshift(src, axes=1)[:, 0])
+    assert np.allclose(dst[:, -1], dst[:, 0])
 
 
 def test_transform_threaded_matches_serial(nside, healpix_map, forced_workers):
@@ -83,7 +83,7 @@ def test_half_dfs_still_returns_the_shifted_array(nside, healpix_map):
     up, fft_coeff = di.transform_healpix_to_grid(
         healpix_map, map_rows=pole_stencil_rows(nside)
     )
-    _, got = DFS(up, fft_coeff, spin=0, half=True)
+    _, got = DFS(up, fft_coeff, spin=0, half=True, belt_split=False)
 
     n_rings, n_lon = fft_coeff.shape
     north, south = dfs_mod._pole_stencils(up, 0)
@@ -91,7 +91,11 @@ def test_half_dfs_still_returns_the_shifted_array(nside, healpix_map):
     ref[0] = np.fft.fft(north, n=n_lon, norm="forward")
     ref[1 : n_rings + 1] = fft_coeff
     ref[n_rings + 1] = np.fft.fft(south, n=n_lon, norm="forward")
-    assert np.array_equal(got, _natural_ref(ref))
+    # belt_split=False, so _finish_nyquist splits the slot into equal halves
+    want = _natural_ref(ref)
+    want[:, 0] *= 0.5
+    want[:, -1] = want[:, 0]
+    assert np.array_equal(got, want)
 
 
 # --- the worker-count policy ------------------------------------------------

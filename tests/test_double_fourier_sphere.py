@@ -26,8 +26,12 @@ def test_dfs_shapes(nside, healpix_map):
 def test_dfs_roundtrip_is_exact(nside, healpix_map, relerr):
     """DFS -> DFS_inverse recovers the original fft_coeff exactly."""
     upsampled, fft_coeff = transform_healpix_to_grid(healpix_map)
-    _, double_fft = DFS(upsampled, fft_coeff)
-    recovered = DFS_inverse(double_fft)
+    # belt_split=False: with the split ON, DFS deliberately writes the SAME measured
+    # value into both |m| = 2*nside columns for the latitude fit to separate, so it is
+    # not information-preserving on that one column and DFS_inverse cannot invert it.
+    # See double_fourier_sphere._finish_nyquist.
+    _, double_fft = DFS(upsampled, fft_coeff, belt_split=False)
+    recovered = DFS_inverse(double_fft, belt_split=False)
     assert relerr(recovered, fft_coeff) < 1e-12
 
 

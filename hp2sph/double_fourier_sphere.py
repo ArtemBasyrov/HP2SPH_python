@@ -121,27 +121,95 @@ def _shifted_into(dst: np.ndarray, src: np.ndarray) -> None:
     """Write ``np.fft.fftshift(src, axes=1)`` into ``dst``, widening the Nyquist.
 
     ``src`` is in numpy FFT order with ``n_lon = 4*nside`` columns. That layout has one
-    slot for ``|m| = 2*nside`` and parks the whole content in it as ``m = -2*nside``.
-    ``dst`` has ``n_lon + 1`` columns in natural centred order ``m = -2*nside ..
-    +2*nside``, so both ends exist and the content is split half onto each -- the
-    assignment a real cosine actually has.
+    slot for ``|m| = 2*nside`` and parks the whole measured value in it as
+    ``m = -2*nside``. ``dst`` has ``n_lon + 1`` columns in natural centred order
+    ``m = -2*nside .. +2*nside``, so both ends exist.
 
-    That split is not new to the pipeline, only new to this end of it:
-    ``FSHT.preparation`` has always split the single column on the way in and
-    ``FSHT.convert_to_bivar_coeffs`` doubled it back on the way out. Carrying both
-    columns explicitly lets each of those drop its half of the compensation, and makes
-    the array Hermitian in the one place a real sky says it must be.
+    Both ends are given the SAME measured value here. Which of the two carries which
+    part of it is a per-row question -- it depends on the ring's ``phi0`` -- so
+    ``_apply_belt_nyquist_signs`` finishes the job once the row layout is known.
     """
     n_lon = src.shape[1]
     shift = n_lon // 2
     dst[:, :shift] = src[:, n_lon - shift :]
     dst[:, shift:n_lon] = src[:, : n_lon - shift]
-    dst[:, 0] *= 0.5
     dst[:, n_lon] = dst[:, 0]
 
 
+def _belt_nyquist_signs(nside: int, half: bool) -> np.ndarray:
+    """``exp(i * 4*nside * phi0)`` per DFS row, in the row layout ``DFS`` returns.
+
+    A ring of ``4*nside`` pixels measures ``m = +2*nside`` and ``m = -2*nside`` together,
+    as ``V = c_- + c_+ * exp(i * 4*nside * phi0)``. Along the equatorial belt ``phi0``
+    alternates between ``0`` and ``pi/(4*nside)``, so this factor alternates between
+    ``+1`` and ``-1`` from one ring to the next.
+
+    Polar rings never produce the slot at all -- it is above their own Nyquist and the
+    zero-padding leaves it at 0 -- so their factor multiplies zero and does not matter.
+    The two pole rows get 1.
+    """
+    n_rings = 4 * nside - 1
+    ring = np.exp(1j * 4 * nside * ring_first_longitude(nside))
+    head = np.concatenate(([1.0], ring, [1.0]))
+    return head if half else np.concatenate((head, ring[::-1]))
+
+
+def _finish_nyquist(
+    natural: np.ndarray, nside: int, half: bool, belt_split: bool
+) -> None:
+    """Decide what the two ``|m| = 2*nside`` columns hold. In place.
+
+    ``belt_split=False`` is the conservative assignment: half the measured value in each
+    column. It asserts ``c_+ = c_-``, i.e. that the content is a pure cosine, so it
+    recovers only that half and ``a_{lmax,lmax}`` comes back at exactly half its true
+    value. It has one property the split does not: ``DFS_inverse`` inverts it exactly,
+    including under an exact-interpolation (square-band) solve.
+
+    ``belt_split=True`` separates them properly; see :func:`_apply_belt_nyquist_signs`.
+    It is the default for the scalar compact band and it is NOT usable everywhere:
+
+    * The square band interpolates exactly, so it reproduces the DUPLICATED data in both
+      columns rather than extracting one part into each, and the synthesis then sums to
+      twice the truth. ``pipeline.forward_C`` and ``backward_map`` turn the split off
+      whenever the solve is not the compact band.
+    * The spin path's stagnation stopping rule is calibrated on ``c_+`` sitting
+      unfitted in the residual. Fitting it changes where the residual plateaus, and
+      measured that costs real accuracy -- top-band ``C_l^EE`` goes from 1.356e-04 to
+      6.744e-04 at nside 16. ``spin_transform`` therefore keeps the split off until that
+      rule is re-derived.
+    """
+    if belt_split:
+        _apply_belt_nyquist_signs(natural, nside, half)
+    else:
+        natural[:, 0] *= 0.5
+        natural[:, -1] = natural[:, 0]
+
+
+def _apply_belt_nyquist_signs(natural: np.ndarray, nside: int, half: bool) -> None:
+    """Separate ``c_-`` and ``c_+`` in the two ``|m| = 2*nside`` columns, in place.
+
+    On entry both columns hold the measured ``V = c_- + s*c_+`` with ``s = +-1`` along
+    the belt. Multiplying the ``+2*nside`` column by ``s`` leaves the two columns holding
+    ``V`` and ``s*V``. The latitude solve then does the separation for free: it fits a
+    band-limited function to each, and the ring-to-ring ALTERNATING part of either
+    sequence sits at the latitude Nyquist, outside the band being fitted. So the fit of
+    ``V`` keeps ``c_-`` and drops ``s*c_+``, and the fit of ``s*V`` keeps ``c_+`` and
+    drops ``s*c_-``.
+
+    Without this both columns carry ``V`` unseparated, the two halves reconstruct only
+    the cosine part, and ``a_{lmax,lmax}`` comes back at exactly half its true value.
+    Measured on a single-harmonic probe, that gain goes from 0.5000 to 1.0000 at nside
+    16, 32 and 64.
+    """
+    natural[:, -1] *= _belt_nyquist_signs(nside, half)
+
+
 def DFS(
-    mp: np.ndarray, fft_coeff: np.ndarray, spin: int = 0, half: bool = False
+    mp: np.ndarray,
+    fft_coeff: np.ndarray,
+    spin: int = 0,
+    half: bool = False,
+    belt_split: bool = True,
 ) -> (np.ndarray, np.ndarray):
     """Double the map across the poles and return ``(map, fourier)`` rows.
 
@@ -156,6 +224,7 @@ def DFS(
     """
     if half:
         n_rings, n_lon = fft_coeff.shape
+        nside = n_lon // 4
         north, south = _pole_stencils(mp, spin)
         # The map half of the return value is not built. Every caller of ``DFS`` uses
         # only the Fourier array, and at nside 1024 the map is another 0.27 GB whose
@@ -182,6 +251,7 @@ def DFS(
             n_rings,
             default_workers(n_rings) if n_rings >= _MIN_THREADED_RINGS else 1,
         )
+        _finish_nyquist(half_fft, nside, True, belt_split)
         return half_map, half_fft
 
     south_part = _mirror_map(mp, spin)
@@ -220,11 +290,14 @@ def DFS(
     # ``_shifted_into``).
     natural = np.empty((double_fft.shape[0], double_fft.shape[1] + 1), dtype=complex)
     _shifted_into(natural, double_fft)
+    _finish_nyquist(natural, fft_coeff.shape[1] // 4, False, belt_split)
 
     return double_map, natural
 
 
-def DFS_inverse(double_fft: np.ndarray, spin: int = 0) -> np.ndarray:
+def DFS_inverse(
+    double_fft: np.ndarray, spin: int = 0, belt_split: bool = True
+) -> np.ndarray:
     nside = (double_fft.shape[1] - 1) // 4
     n_rings = 4 * nside - 1
     n_lon = 4 * nside
@@ -236,10 +309,14 @@ def DFS_inverse(double_fft: np.ndarray, spin: int = 0) -> np.ndarray:
     # weights = compute_ring_area_weights(nside) # both poles + original map
     # fft_coeff /= weights[1:-1][:, np.newaxis]
 
-    # Un-widen: numpy order has a single |m| = 2*nside slot, so the two half-columns
-    # the natural order carries sum back into it. Exact inverse of ``_shifted_into``.
+    # Un-widen: numpy order has a single |m| = 2*nside slot, and what a ring of
+    # 4*nside pixels measures there is V = c_- + s*c_+ with s = exp(i*4*nside*phi0).
+    # Exact inverse of ``_shifted_into`` followed by ``_apply_belt_nyquist_signs``.
+    signs = (
+        _belt_nyquist_signs(nside, half=False)[1 : n_rings + 1] if belt_split else 1.0
+    )
     narrow = fft_coeff[:, :n_lon].copy()
-    narrow[:, 0] += fft_coeff[:, n_lon]
+    narrow[:, 0] += signs * fft_coeff[:, n_lon]
 
     # apply FFT shift from natural ordering to numpy ordering
     fft_coeff = np.fft.ifftshift(narrow, axes=1)
