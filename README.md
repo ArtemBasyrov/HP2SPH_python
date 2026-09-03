@@ -110,12 +110,12 @@ Intensity `C_l^TT`:
 
 Scalar forward timings, 8 threads for every backend, min of 3 timed calls after a warm-up.
 
-| nside | HP2SPH | healpy pixel † | healpy ring | ducc0 adjoint | healpy `iter=3` | ducc0 pseudo |
+| nside | HP2SPH | healpy pixel | healpy ring | ducc0 adjoint | healpy `iter=3` | ducc0 pseudo |
 |---|---|---|---|---|---|---|
-| 256 | 0.066 s | 0.005 s | 0.004 s | 0.012 s | 0.021 s | 0.183 s |
-| 512 | 0.290 s | 0.024 s | 0.021 s | 0.076 s | 0.120 s | 1.006 s |
-| 1024 | 1.322 s | 0.149 s | 0.138 s | 0.508 s | 0.789 s | 6.720 s |
-| 2048 | 6.481 s | 1.016 s | 0.976 s | 3.646 s | 5.847 s | 39.775 s |
+| 256 | 0.069 s | 0.005 s | 0.004 s | 0.0021 s | 0.021 s | 0.037 s |
+| 512 | 0.281 s | 0.024 s | 0.022 s | 0.0113 s | 0.122 s | 0.155 s |
+| 1024 | 1.262 s | 0.150 s | 0.138 s | 0.072 s | 0.800 s | 0.967 s |
+| 2048 | 6.257 s | 1.023 s | 0.989 s | 0.533 s | 5.921 s | 5.880 s |
 
 ## Tests
 

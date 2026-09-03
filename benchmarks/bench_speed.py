@@ -6,7 +6,9 @@ Every backend is given the *same* work: the same map and the same band
 ``--threads N`` asks every backend for N threads, and the run metadata records what
 each could actually be told, because they do not all honour it the same way:
 
-* ducc0 takes an explicit ``nthreads`` argument, so it is exact.
+* ducc0 takes an explicit ``nthreads`` argument, and ``backends.set_threads``
+  resizes ducc0's thread pool to match so that argument is not silently capped
+  to 1 by the ``OMP_NUM_THREADS`` pin.
 * HP2SPH splits its NUFFT batch over N Python threads and threads its FastTransforms
   stage through OpenMP.
 * healpy 1.20 exposes NO thread argument; its bundled libsharp reads

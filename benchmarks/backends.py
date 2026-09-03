@@ -56,7 +56,12 @@ def set_threads(n):
     The three families thread by different mechanisms, and only two of them can be
     set from Python at all:
 
-    * ducc0 takes an explicit ``nthreads`` argument, so it is exact.
+    * ducc0 takes an explicit ``nthreads`` argument, but that argument cannot exceed
+      the size of ducc0's own thread pool, and that pool is sized ONCE from
+      ``DUCC0_NUM_THREADS``, else ``OMP_NUM_THREADS``, else the core count.
+      ``hp2sph/_bootstrap`` sets ``OMP_NUM_THREADS=1`` at import, so a pool created
+      after that import holds one thread and every ``nthreads=N`` is silently capped
+      to 1.
     * HP2SPH splits its NUFFT batch over ``HP2SPH_NUFFT_WORKERS`` Python threads and
       threads its FastTransforms stage through OpenMP.
     * healpy 1.20 exposes NO thread argument on ``map2alm``/``alm2map``; its bundled
@@ -70,10 +75,22 @@ def set_threads(n):
     global THREADS
     THREADS = max(1, int(n))
     os.environ["HP2SPH_NUFFT_WORKERS"] = str(THREADS)
+
+    # Without this the ``nthreads=THREADS`` every ducc0 call passes is capped at the
+    # pool size, which OMP_NUM_THREADS=1 has already fixed at 1. See the docstring.
+    ducc_pool = None
+    try:
+        import ducc0
+
+        ducc0.misc.resize_thread_pool(THREADS)
+        ducc_pool = ducc0.misc.thread_pool_size()
+    except Exception as exc:  # ducc0 is optional; a missing backend must not fail here
+        ducc_pool = f"unavailable ({exc})"
+
     omp = os.environ.get("HP2SPH_OMP_THREADS")
     return {
         "requested": THREADS,
-        "ducc0": THREADS,
+        "ducc0": ducc_pool,
         "hp2sph_nufft_workers": THREADS,
         "openmp": omp or "1 (pinned by hp2sph/_bootstrap)",
         "healpy": (
