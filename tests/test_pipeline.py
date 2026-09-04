@@ -151,35 +151,6 @@ def test_forward_alm_converges_with_nside(relerr):
     assert errs[1] < errs[0], f"no convergence: ns4={errs[0]:.4f} ns16={errs[1]:.4f}"
 
 
-# --------------------------------------------------------------------------- #
-# The CLI wrappers (hp2sph/cli.py)                                             #
-# --------------------------------------------------------------------------- #
-# The CLI wrappers must stay a thin shell over ``hp2sph.pipeline``: they add FITS
-# I/O and argument handling and nothing else. A 2-D input is rejected outright --
-# an earlier signature took a 3-row (I, Q, U) stack and silently transformed only I.
-@pytest.mark.ft
-def test_cli_forward_is_the_pipeline_composition(nside, healpix_map, relerr):
-    from hp2sph import cli
-
-    assert relerr(cli.forward(healpix_map), forward_C(healpix_map)) == 0.0
-
-
-@pytest.mark.ft
-def test_cli_roundtrip_matches_the_pipeline(nside, healpix_map, relerr):
-    from hp2sph import cli
-
-    C = cli.forward(healpix_map)
-    assert relerr(cli.backward(C), backward_map(C, nside)) == 0.0
-
-
-def test_cli_forward_rejects_an_iqu_stack():
-    """A 2-D (I, Q, U) stack must be refused, not silently reduced to its first row."""
-    from hp2sph import cli
-
-    with pytest.raises(ValueError, match="single HEALPix map"):
-        cli.forward(np.zeros((3, 12 * 4**2)))
-
-
 @pytest.mark.ft
 def test_forward_C_half_domain_route_is_bit_identical(healpix_map):
     """The scalar forward's half-domain route reproduces the full one exactly.

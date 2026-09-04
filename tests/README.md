@@ -60,7 +60,7 @@ Spin-2 (polarization):
 Fixtures (`conftest.py`) parametrise over `nside in {4, 8, 16}` and provide a
 random band-limited `random_alm`, the synthesised `healpix_map`, and a `relerr`
 helper. `pipeline_helpers.py` wires the four stages into `forward_C` /
-`forward_alm` / `backward_map` without the FITS I/O that `hp2sph/cli.py` does.
+`forward_alm` / `backward_map`.
 
 ## Status
 
