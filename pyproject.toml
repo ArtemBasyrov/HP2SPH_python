@@ -19,16 +19,12 @@ keywords = ["healpix", "spherical-harmonics", "cmb", "astrophysics", "fft"]
 dependencies = [
     "numpy",
     "scipy",
-    "astropy",
     "healpy",
     "finufft",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
-
-[project.scripts]
-hp2sph = "hp2sph.cli:main"
 
 [tool.setuptools]
 packages = ["hp2sph"]
@@ -38,6 +34,9 @@ packages = ["hp2sph"]
 # of healpy. Renaming it to satisfy the ambiguous-name rule would make the code
 # harder to read against the reference, not easier.
 ignore = ["E741"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
 # The OpenMP guards must be set before any library that links libomp is imported,
