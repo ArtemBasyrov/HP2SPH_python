@@ -120,7 +120,7 @@ Scalar forward timings, 8 threads for every backend, min of 3 timed calls after 
 ## Tests
 
 ```bash
-python -m pytest              # 415 tests, ~12 s
+python -m pytest              # 408 tests, ~14 s
 python -m pytest -m "not ft"  # skip tests needing libfasttransforms
 ```
 
