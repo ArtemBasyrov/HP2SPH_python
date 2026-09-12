@@ -1,7 +1,6 @@
 from typing import NamedTuple
 
 import numpy as np
-import healpy as hp
 
 from ._threads import default_workers, run_blocks
 from .data_interpolation import (
@@ -281,11 +280,6 @@ def DFS(
     )
     double_fft[n_rings + 2 :] = south_part
 
-    """# apply weights correction
-    weights = compute_ring_area_weights(fft_coeff.shape[1] // 4) # both poles + original map
-    double_fft[:n_rings+2] *= weights[:, np.newaxis]
-    double_fft[n_rings+2:] *= np.flip(weights[1:-1])[:, np.newaxis] # flip weights for the mirrored part 
-    """
     # numpy ordering -> natural ordering, widening the Nyquist column (see
     # ``_shifted_into``).
     natural = np.empty((double_fft.shape[0], double_fft.shape[1] + 1), dtype=complex)
@@ -304,10 +298,6 @@ def DFS_inverse(
 
     # selecting the upper part of the double map without added poles
     fft_coeff = double_fft[1 : n_rings + 1]
-
-    # apply weights correction
-    # weights = compute_ring_area_weights(nside) # both poles + original map
-    # fft_coeff /= weights[1:-1][:, np.newaxis]
 
     # Un-widen: numpy order has a single |m| = 2*nside slot, and what a ring of
     # 4*nside pixels measures there is V = c_- + s*c_+ with s = exp(i*4*nside*phi0).
@@ -539,27 +529,3 @@ def interpolate_polar_rings(mp: np.ndarray) -> np.ndarray:
     double_map[n_rings + 2 :] = mp[n_rings:]
 
     return double_map
-
-
-def compute_ring_area_weights(nside):
-    theta = create_latitude_array(nside)
-    theta = np.concatenate(([90.0], theta, [-90.0]))  # [90, ..., -90]
-
-    ring_borders = np.zeros(len(theta) + 1)
-    ring_borders[1:-1] = theta[:-1] + np.diff(theta) / 2
-    ring_borders[0] = 90
-    ring_borders[-1] = -90
-    ring_borders = np.deg2rad(ring_borders + 90.0)  # [90, -90] -> [pi, 0]
-
-    ring_areas = np.zeros(len(ring_borders) - 1)
-    ring_areas = -2 * np.pi * (np.cos(ring_borders[:-1]) - np.cos(ring_borders[1:]))
-
-    assert np.isclose(np.sum(ring_areas), 4 * np.pi), (
-        "Sum of ring areas should be equal to 4*pi"
-    )
-
-    hp_pix_area = hp.nside2pixarea(nside)
-    pixel_area = ring_areas / (4 * nside)
-    correction = pixel_area / hp_pix_area
-
-    return correction

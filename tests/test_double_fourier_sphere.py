@@ -7,7 +7,6 @@ from hp2sph.data_interpolation import transform_healpix_to_grid, create_latitude
 from hp2sph.double_fourier_sphere import (
     DFS,
     DFS_inverse,
-    compute_ring_area_weights,
     interpolate_polar_rings,
 )
 
@@ -71,13 +70,3 @@ def test_polynomial_pole_fill_beats_linear(nside):
     lin_err = abs(north_lin - north_exact) / abs(north_exact)
     assert poly_err < 0.2 * lin_err, f"poly {poly_err:.2e} not << linear {lin_err:.2e}"
     assert poly_err < 2e-2, f"poly pole fill inaccurate: {poly_err:.2e}"
-
-
-def test_ring_area_weights_partition_sphere(nside):
-    """The ring areas underlying the weights must tile the full sphere."""
-    # compute_ring_area_weights asserts sum(ring_areas) == 4*pi internally;
-    # here we also confirm the returned correction is finite and positive.
-    correction = compute_ring_area_weights(nside)
-    assert correction.shape == (4 * nside - 1 + 2,)  # poles + rings
-    assert np.all(np.isfinite(correction))
-    assert np.all(correction > 0)
