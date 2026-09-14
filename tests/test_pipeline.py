@@ -8,12 +8,8 @@ import pytest
 pytest.importorskip("hp2sph.ft_sphere")
 
 from hp2sph.FSHT import from_healpy_alm  # noqa: E402
-from tests.pipeline_helpers import (  # noqa: E402
-    forward_C,
-    forward_alm,
-    backward_map,
-    calibrate_scale,
-)
+from hp2sph.pipeline import forward_C, forward_alm, backward_map  # noqa: E402
+from tests.conftest import calibrate_scale  # noqa: E402
 
 
 def _sub_band(alm, lmax, cut=1):

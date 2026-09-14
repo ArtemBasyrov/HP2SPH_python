@@ -71,7 +71,7 @@ def _roundtrip(nside, synthesis_eps=None, **nufft_kw):
     from hp2sph.double_fourier_sphere import DFS
     from hp2sph.nuFFT import apply_nuFFT
     from hp2sph.FSHT import FSHT
-    from tests.pipeline_helpers import backward_map
+    from hp2sph.pipeline import backward_map
 
     lmax = 2 * nside
     rng = np.random.default_rng(20260620)

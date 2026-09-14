@@ -38,8 +38,7 @@ from hp2sph.pipeline import ANALYSIS_EPS, forward_C, backward_map
 
 # ``hp2sph.pipeline`` is the repo's side-effect-free wiring of the four pipeline
 # stages -- the same composition ``main.forward`` wraps with FITS I/O and the same
-# one the test suite pins. This used to import from ``tests.pipeline_helpers``,
-# which put production code behind a test module.
+# one the test suite pins.
 
 
 # --------------------------------------------------------------------------- #

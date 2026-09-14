@@ -1,10 +1,7 @@
 """Side-effect-free wiring of the four HP2SPH stages.
 
-This is the composition every caller should use: ``main.py`` wraps it with FITS
-I/O, the tests pin it, and the benchmarks time it. It lived in
-``tests/pipeline_helpers.py`` until the benchmarks started importing it, which put
-production code behind a test module; ``tests/pipeline_helpers`` now re-exports
-from here so the test suite is unchanged.
+This is the composition every caller should use: the tests pin it and the
+benchmarks time it.
 
 Nothing here prints, saves, or reads a file. The stages are:
 
@@ -96,8 +93,8 @@ def forward_alm(healpix_map, lmax, scale=SCALE_2PI, mono_factor=1.0, **nufft_kw)
     """Full forward transform to a healpy-ordered alm.
 
     ``scale`` defaults to the first-principles ``1/(2*pi)`` (see
-    ``FSHT.to_healpy_alm``); pass ``tests.pipeline_helpers.calibrate_scale(...)``
-    only to verify.
+    ``FSHT.to_healpy_alm``); a zonal-probe calibration differs from it by ~5e-5
+    and is for verification only.
     """
     C = forward_C(healpix_map, **nufft_kw)
     return to_healpy_alm(C, lmax=lmax, scale=scale, mono_factor=mono_factor)

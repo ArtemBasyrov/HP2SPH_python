@@ -34,7 +34,7 @@ import sys, contextlib, io
 sys.path.insert(0, {root!r})
 {preamble}
 import numpy as np, healpy as hp
-from tests.pipeline_helpers import forward_C
+from hp2sph.pipeline import forward_C
 mp = hp.alm2map(np.zeros(hp.Alm.getsize(32), dtype=complex) + 1.0, nside=16, lmax=32)
 with contextlib.redirect_stdout(io.StringIO()):
     C = forward_C(mp)
@@ -208,7 +208,7 @@ from hp2sph import _openmp
 print("BEFORE", len(_openmp.runtime_paths()))
 import hp2sph.ft_sphere  # noqa: F401  -- this is what resolves FASTTRANSFORMS_LIB
 print("AFTER", len(_openmp.runtime_paths()))
-from tests.pipeline_helpers import forward_C
+from hp2sph.pipeline import forward_C
 mp = hp.alm2map(np.zeros(hp.Alm.getsize(32), dtype=complex) + 1.0, nside=16, lmax=32)
 with contextlib.redirect_stdout(io.StringIO()):
     C = np.asarray(forward_C(mp))

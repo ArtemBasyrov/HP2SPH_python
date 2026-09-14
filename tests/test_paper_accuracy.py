@@ -62,7 +62,8 @@ import pytest
 # The pipeline helpers load the C library on import; skip cleanly if it is missing.
 pytest.importorskip("hp2sph.ft_sphere")
 
-from tests.pipeline_helpers import forward_alm, calibrate_scale  # noqa: E402
+from hp2sph.pipeline import forward_alm  # noqa: E402
+from tests.conftest import calibrate_scale  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #

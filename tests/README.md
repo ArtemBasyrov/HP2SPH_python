@@ -76,7 +76,7 @@ The solver, the alias fold, and the machinery that exists only for speed:
 | `test_openmp_guard.py` | env | the OpenMP guards, in subprocesses, because the environment has to be wrong before import |
 
 Fixtures (`conftest.py`) parametrise over `nside in {4, 8, 16}` and provide a seeded `rng`, `lmax = 2*nside`, a random band-limited `random_alm` (real-map symmetry built in), the synthesised `healpix_map`, an `iqu_map`, and a `relerr` helper.
-The pipeline composition itself lives in `hp2sph/pipeline.py`; `pipeline_helpers.py` re-exports it and adds the one test-only helper, `calibrate_scale`.
+The pipeline composition itself lives in `hp2sph/pipeline.py`; `conftest.py` also holds the one test-only helper, `calibrate_scale`.
 
 ## What the numbers are
 

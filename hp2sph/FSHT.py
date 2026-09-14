@@ -146,8 +146,7 @@ def to_healpy_alm(
     deviations are latitude QUADRATURE error, not a normalization that a better
     constant could absorb -- a best-fit global scale differs from 1/(2*pi) by only
     ~5e-5 and does not reduce the per-l error). So ``scale`` defaults to
-    ``SCALE_2PI`` and the old empirical zonal-probe calibration is unnecessary;
-    ``tests/pipeline_helpers.calibrate_scale`` is kept only for verification.
+    ``SCALE_2PI`` and an empirical zonal-probe calibration is unnecessary.
     ``mono_factor`` defaults to 1: once ``preparation`` no longer double-weights
     the latitude-DC (T_0) row, the monopole needs no special gain.
 

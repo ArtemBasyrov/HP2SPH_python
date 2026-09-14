@@ -97,3 +97,28 @@ def rel_err(a, b):
 @pytest.fixture
 def relerr():
     return rel_err
+
+
+# --------------------------------------------------------------------------- #
+# Test-only helpers                                                            #
+# --------------------------------------------------------------------------- #
+def calibrate_scale(nside, lmax, ell_probe=2, **nufft_kw):
+    """Global gain mapping a unit zonal a_{l,0} onto C[l, 0].
+
+    Synthesises a single zonal harmonic, runs it forward, and reads the gain off
+    the corresponding C cell. Pure healpy + pipeline; no assumptions baked in.
+    Must use the same ``nufft_kw`` as the forward it calibrates.
+
+    Verification only: the production scale is the first-principles
+    ``FSHT.SCALE_2PI`` and a best fit differs from it by ~5e-5.
+    """
+    # Imported here, not at module level: hp2sph.pipeline pulls in the C library,
+    # and conftest must import without it for ``-m "not ft"``.
+    from hp2sph.pipeline import forward_C
+
+    alm = np.zeros(hp.Alm.getsize(lmax), dtype=np.complex128)
+    alm[hp.Alm.getidx(lmax, ell_probe, 0)] = 1.0
+    mp = hp.alm2map(alm, nside=nside, lmax=lmax)
+    C = forward_C(mp, **nufft_kw)
+    sign = (-1.0) ** ell_probe
+    return sign * C[ell_probe, 0].real
