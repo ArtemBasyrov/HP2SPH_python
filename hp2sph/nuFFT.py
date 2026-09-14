@@ -40,7 +40,7 @@ import logging
 
 import numpy as np
 import finufft
-from scipy.sparse.linalg import cg, lsmr, LinearOperator
+from scipy.sparse.linalg import cg, LinearOperator
 
 from . import _openmp
 from ._threads import (  # noqa: F401  (re-exported for callers/tests)
@@ -316,7 +316,7 @@ def _fold_ops(fold, n_trans, M_samples):
     turns the model's wide-band longitude spectrum at each latitude into what the
     HEALPix ring at that latitude actually measures -- a scatter-add over alias
     families -- and ``adjoint`` is the matching gather, so the pair is an exact adjoint
-    and LSMR/CG stay valid.
+    and CG stays valid.
 
     Both work on the ``(n_trans, M_samples)`` layout the solvers use, and both return
     that layout C-contiguous.
@@ -663,93 +663,6 @@ def _cg_nufft_forward_half(
             monitor=mon,
         )
     return expand(sol.reshape(n_trans, K + 1)).copy().T, info
-
-
-def lsmr_nufft_forward(
-    x,
-    f_samples,
-    N_modes=None,
-    sample_mask=None,
-    rtol=1e-9,
-    maxiter=None,
-    eps=1e-12,
-    fold=None,
-):
-    """Latitude analysis via LSMR on the least-squares problem itself.
-
-    Solves ``min || sqrt(W) (A f_hat - samples) ||`` directly, rather than forming
-    the normal equations. Reach for it when the system may be RANK-DEFICIENT: started
-    from zero, LSMR converges to the MINIMUM-NORM least-squares solution, which is
-    the right answer for a mode the grid never sampled -- it invents no content in
-    the null space, whereas CG on the normal equations drifts into it. LSMR also
-    works with ``cond(A)`` rather than ``cond(A)^2``.
-
-    No route in :func:`apply_nuFFT` selects it by default. The pipeline's masked
-    solves are paired with a fold plan that restores full rank, so they use CG, which
-    is faster; this solver is for callers who build a rank-deficient system of their
-    own, or who want a ``cond(A)`` method for a badly conditioned band.
-
-    Cost per iteration is one forward + one adjoint NUFFT, the same as a CG
-    iteration. Returns ``(f_hat of shape (N_modes, n_trans), info)`` like
-    :func:`cg_nufft_forward`.
-    """
-    n_trans = f_samples.shape[0]
-    M_samples = f_samples.shape[1]
-    if N_modes is None:
-        N_modes = _default_N_modes(M_samples)
-
-    plan_forward = finufft.Plan(
-        2, (N_modes,), n_trans=n_trans, isign=1, dtype=np.complex128, eps=eps
-    )
-    plan_adjoint = finufft.Plan(
-        1, (N_modes,), n_trans=n_trans, isign=-1, dtype=np.complex128, eps=eps
-    )
-    plan_forward.setpts(x)
-    plan_adjoint.setpts(x)
-
-    weights = np.abs(compute_voronoi_weights_1d(x))
-    sw = np.sqrt(weights)[None, :]  # (1, M_samples), broadcasts over columns
-    if sample_mask is not None:
-        mask = np.asarray(sample_mask, dtype=float)
-        if mask.shape == (M_samples, n_trans):
-            mask = mask.T
-        if mask.shape != (n_trans, M_samples):
-            raise ValueError(
-                f"sample_mask must be ({n_trans}, {M_samples}) or its transpose, "
-                f"got {np.shape(sample_mask)}"
-            )
-        sw = sw * np.sqrt(mask)  # zero rows drop out of the least squares entirely
-
-    fold_apply, fold_adjoint = _fold_ops(fold, n_trans, M_samples)
-
-    def matvec(f_hat_vec):
-        out = np.zeros((n_trans, M_samples), dtype=np.complex128)
-        plan_forward.execute(
-            np.ascontiguousarray(f_hat_vec.reshape(n_trans, N_modes)), out
-        )
-        if fold_apply is not None:
-            out = fold_apply(out)
-        return (sw * out).ravel()
-
-    def rmatvec(res_vec):
-        out = np.zeros((n_trans, N_modes), dtype=np.complex128)
-        weighted = sw * res_vec.reshape(n_trans, M_samples)
-        if fold_adjoint is not None:
-            weighted = fold_adjoint(weighted)
-        plan_adjoint.execute(np.ascontiguousarray(weighted), out)
-        return out.ravel()
-
-    B = LinearOperator(
-        shape=(n_trans * M_samples, n_trans * N_modes),
-        matvec=matvec,
-        rmatvec=rmatvec,
-        dtype=np.complex128,
-    )
-    b = (sw * np.asarray(f_samples)).ravel()
-    result = lsmr(B, b, atol=rtol, btol=rtol, maxiter=maxiter)
-    f_hat, istop = result[0], result[1]
-    # istop 1/2 = converged to a solution / least-squares solution; 7 = hit maxiter
-    return f_hat.reshape(n_trans, N_modes).T, (0 if istop in (1, 2) else int(istop))
 
 
 def cg_nufft_forward(
@@ -1101,7 +1014,7 @@ def apply_nuFFT(
         if fold is not None:
             raise NotImplementedError(
                 "the alias fold couples the longitude columns; the SVD path factorizes "
-                "one shared per-column Vandermonde. Use solver='cg' or 'lsmr'."
+                "one shared per-column Vandermonde. Use solver='cg'."
             )
         if sample_mask is not None:
             raise NotImplementedError(
@@ -1111,19 +1024,6 @@ def apply_nuFFT(
         fft_lat, info = svd_nufft_forward(
             DFT_upsampled_lat, np.asarray(mp.T), N_modes=solve_modes, rcond=rcond
         )
-    elif solver == "lsmr":
-        fft_lat, info = lsmr_nufft_forward(
-            DFT_upsampled_lat,
-            np.asarray(mp.T).copy(),
-            N_modes=solve_modes,
-            sample_mask=sample_mask,
-            rtol=rtol,
-            maxiter=maxiter,
-            eps=eps,
-            fold=fold,
-        )
-        if info != 0:
-            logger.warning("LSMR did not converge (istop=%s)", info)
     elif solver == "cg":
         fft_lat, info = cg_nufft_forward(
             DFT_upsampled_lat,
@@ -1145,7 +1045,7 @@ def apply_nuFFT(
         if info != 0:
             logger.warning("CG did not converge (info=%s)", info)
     else:
-        raise ValueError(f"unknown solver {solver!r}; use 'svd', 'cg' or 'lsmr'")
+        raise ValueError(f"unknown solver {solver!r}; use 'svd' or 'cg'")
 
     if solve_modes < N_modes:
         fft_lat = _embed_centered(fft_lat, N_modes)

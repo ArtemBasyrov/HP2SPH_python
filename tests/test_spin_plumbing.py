@@ -97,18 +97,6 @@ def test_masked_nuFFT_matches_unmasked_when_mask_is_all_true(nside):
     np.testing.assert_allclose(masked, plain, rtol=1e-8, atol=1e-12)
 
 
-def test_lsmr_matches_cg_on_the_unmasked_problem(nside, relerr):
-    """Without a mask the fit is well posed, so LSMR and CG must agree."""
-    from hp2sph.double_fourier_sphere import DFS
-
-    z = _real_map(nside, 2 * nside, seed=5)
-    up, fc = transform_healpix_to_grid(z)
-    _, dfs = DFS(up, fc)
-    a = apply_nuFFT(dfs, solver="cg")
-    b = apply_nuFFT(dfs, solver="lsmr", rtol=1e-10)
-    assert relerr(np.asarray(b), np.asarray(a)) < 1e-6
-
-
 @pytest.mark.ft
 def test_spin_result_is_insensitive_to_the_cg_tolerance():
     """The recovered spin alm must not move when the latitude solve is pushed harder.

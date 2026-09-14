@@ -53,8 +53,8 @@ def forward_C(healpix_map, **nufft_kw):
     nufft_kw.setdefault("spin", 0)
     if nufft_kw.get("solver", "cg") == "cg":
         nufft_kw.setdefault("eps", ANALYSIS_EPS)
-    # Only the CG solver understands the half layout: svd and lsmr take the full
-    # 8*nside latitude sample set, so the square-band route keeps the full path.
+    # Only the CG solver understands the half layout: svd takes the full 8*nside
+    # latitude sample set, so the square-band route keeps the full path.
     # A fold plan or a sample mask is laid out for whichever domain the caller built it
     # in, and a wider band needs the full sample set, so those opt out too.
     half = (
