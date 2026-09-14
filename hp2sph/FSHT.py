@@ -611,15 +611,3 @@ def spin_to_EB_real(
     a_plus = spin_alm_from_F(F_plus, lmax, spin=2, **kw)
     a_minus = spin_alm_from_conjugate_F(F_plus, lmax, spin=2, **kw)
     return _EB_from_spin_alm(a_plus, a_minus)
-
-
-def EB_to_spin_F(almE: np.array, almB: np.array, lmax: int):
-    """Inverse of :func:`spin_to_EB` up to scale: build healpy-ordered spin alm.
-
-    Returns the spin coefficients ``(+2a, -2a)`` as 1-D healpy-ordered arrays
-    (m >= 0): ``+2a = -(a^E + i a^B)``, ``-2a = -(a^E - i a^B)``. The backward
-    pipeline turns these into the ``F`` arrays the inverse spin FSHT consumes.
-    """
-    a_plus = -(almE + 1j * almB)
-    a_minus = -(almE - 1j * almB)
-    return a_plus, a_minus

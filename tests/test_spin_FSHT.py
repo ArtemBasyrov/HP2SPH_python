@@ -19,12 +19,9 @@ from hp2sph import ft_sphere
 from hp2sph.FSHT import (
     preparation,
     convert_to_bivar_coeffs,
-    spin_to_EB,
     spin_to_EB_real,
-    EB_to_spin_F,
     spin_alm_from_F,
     spin_alm_from_conjugate_F,
-    _spin_F_col,
 )
 
 pytestmark = pytest.mark.ft
@@ -44,21 +41,6 @@ def test_spin_prep_convert_idempotent(nside, spin):
     Px = convert_to_bivar_coeffs(preparation(x, spin=spin), nside, spin=spin)
     PPx = convert_to_bivar_coeffs(preparation(Px, spin=spin), nside, spin=spin)
     assert np.linalg.norm(PPx - Px) / np.linalg.norm(Px) < 1e-10
-
-
-def test_EB_spin_algebra_roundtrip():
-    """spin_to_EB and EB_to_spin_F implement consistent inverse E/B relations."""
-    lmax = 8
-    rng = np.random.default_rng(0)
-    n = hp.Alm.getsize(lmax)
-    aE = rng.standard_normal(n) + 1j * rng.standard_normal(n)
-    aB = rng.standard_normal(n) + 1j * rng.standard_normal(n)
-    a_plus, a_minus = EB_to_spin_F(aE, aB, lmax)
-    # invert the +-2 a -> E/B relations by hand (the algebra spin_to_EB encodes)
-    almE = -(a_plus + a_minus) / 2.0
-    almB = 1j * (a_plus - a_minus) / 2.0
-    np.testing.assert_allclose(almE, aE, atol=1e-12)
-    np.testing.assert_allclose(almB, aB, atol=1e-12)
 
 
 def test_conjugate_F_readout_matches_the_minus_spin_array():

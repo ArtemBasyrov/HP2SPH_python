@@ -43,5 +43,3 @@ convention = "numpy"
 # so these modules deliberately place imports after executable statements.
 "tests/conftest.py" = ["E402"]
 "tests/test_paper_accuracy.py" = ["E402"]
-# Imported to assert the module's public surface exists, not to be called.
-"tests/test_spin_FSHT.py" = ["F401"]
